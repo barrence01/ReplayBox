@@ -861,7 +861,58 @@ select {
 }
 
 .settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
   max-width: 720px;
+}
+
+.settings-section {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.15rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.settings-section h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.settings-section__desc {
+  margin-top: -0.5rem;
+}
+
+.settings-field {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-field-meta {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.settings-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.settings-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding-top: 0.25rem;
 }
 
 .row-input {
@@ -873,7 +924,7 @@ select {
 .chip-list {
   list-style: none;
   padding: 0;
-  margin: 0.75rem 0 0;
+  margin: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
