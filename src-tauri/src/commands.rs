@@ -1,3 +1,5 @@
+use crate::background_events::{self, BackgroundEvent};
+use crate::background_service::{self, BackgroundServiceStatus};
 use crate::catalog;
 use crate::db;
 use crate::ffmpeg;
@@ -20,14 +22,34 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
 
 #[tauri::command]
 pub fn update_settings(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: Settings,
 ) -> Result<Settings, String> {
     let path = settings::settings_path(&state.app_data);
     settings.save(&path)?;
+    let enabled = settings.background_service_enabled;
     *state.settings.lock() = settings.clone();
-    let _ = watcher::rewatch(&state);
+    background_service::sync_runtime(&app, &state, enabled)?;
+    if !enabled {
+        let _ = watcher::rewatch(&state);
+    }
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn background_service_status(
+    state: State<'_, Arc<AppState>>,
+) -> BackgroundServiceStatus {
+    let enabled = state.settings.lock().background_service_enabled;
+    background_service::status(enabled)
+}
+
+#[tauri::command]
+pub fn drain_daemon_events(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<BackgroundEvent>, String> {
+    background_events::drain_events(&state.app_data)
 }
 
 #[tauri::command]

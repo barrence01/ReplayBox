@@ -1,5 +1,8 @@
+mod background_events;
+mod background_service;
 mod catalog;
 mod commands;
+mod daemon;
 mod db;
 mod ffmpeg;
 mod game_monitor;
@@ -14,6 +17,11 @@ use settings::{db_path, settings_path, thumbs_dir, Settings};
 use state::AppState;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
+
+/// Runs the headless background daemon (`replayboxd`).
+pub fn run_daemon() {
+    daemon::run();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,7 +38,6 @@ pub fn run() {
             std::fs::create_dir_all(thumbs_dir(&app_data))?;
 
             let mut settings = Settings::load(&settings_path(&app_data));
-            // Migrate legacy PATH defaults to auto (bundled-first).
             if settings.ffmpeg_path.trim() == "ffmpeg" {
                 settings.ffmpeg_path.clear();
             }
@@ -40,6 +47,7 @@ pub fn run() {
 
             let resource_dir = tools::discover_resource_dir(app.path().resource_dir().ok());
             let conn = db::open_db(&db_path(&app_data))?;
+            let background_enabled = settings.background_service_enabled;
             let state = AppState::new(app_data, resource_dir, conn, settings);
 
             match media_server::start(state.clone()) {
@@ -51,10 +59,17 @@ pub fn run() {
 
             app.manage(state);
 
-            watcher::spawn_with_state(&app.handle())?;
-            game_monitor::spawn_with_state(&app.handle());
+            let handle = app.handle().clone();
+            let state = handle.state::<Arc<AppState>>().inner().clone();
 
-            // Initial library scan on a background thread.
+            if background_enabled {
+                if let Err(e) = background_service::enable_service() {
+                    eprintln!("background service enable failed: {e}");
+                }
+            } else if let Err(e) = background_service::start_in_app(&handle, &state) {
+                eprintln!("in-app background start failed: {e}");
+            }
+
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let state = handle.state::<Arc<AppState>>();
@@ -99,6 +114,8 @@ pub fn run() {
             commands::cancel_job,
             commands::start_trim,
             commands::start_compress,
+            commands::background_service_status,
+            commands::drain_daemon_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ReplayBox");

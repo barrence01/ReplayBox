@@ -24,6 +24,35 @@ For day-to-day development (bundled FFmpeg + hot reload):
 npm run tauri:dev
 ```
 
+## Binaries
+
+The `src-tauri` crate defines two binaries. `Cargo.toml` sets `default-run = "replaybox"`, so plain `cargo run` launches the desktop app.
+
+| Binary | Path | Purpose |
+|--------|------|---------|
+| `replaybox` | `src/main.rs` | Tauri UI |
+| `replayboxd` | `src/bin/replayboxd.rs` | systemd-friendly daemon (watch folder + game process sessions) |
+
+```bash
+cd src-tauri
+
+cargo run --bin replaybox
+cargo run                  # same as --bin replaybox
+
+cargo build --bin replayboxd
+cargo run --bin replayboxd
+```
+
+Without `--bin` or `default-run`, Cargo errors with *could not determine which binary to run* when both exist.
+
+### Background service (`replayboxd`)
+
+1. Build the daemon: `cargo build --bin replayboxd` (from `src-tauri`).
+2. In the app: Settings → **Run background service** → Save.
+3. The app writes `~/.config/systemd/user/replayboxd.service` with `ExecStart` pointing at the resolved `replayboxd` path (beside the app binary, or under `target/debug` / `target/release`), then runs `systemctl --user enable --now replayboxd`.
+
+If you need the user service without an active graphical login session, see `loginctl enable-linger`.
+
 ## What `build-all` does
 
 1. Verifies host tools (`node`, `npm`, `cargo`, `rustc`, `git`, `make`, `pkg-config`, **`nasm`**, **libx264**)

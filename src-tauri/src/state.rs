@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::settings::Settings;
@@ -26,6 +27,8 @@ pub struct AppState {
     /// Running ffmpeg PIDs keyed by job id (for cancel).
     pub job_pids: Mutex<HashMap<String, Arc<std::sync::Mutex<Option<u32>>>>>,
     pub watcher: Mutex<Option<RecommendedWatcher>>,
+    /// Generation flag for in-app watcher / game monitor loops.
+    pub bg_stop: Mutex<Arc<AtomicBool>>,
 }
 
 impl AppState {
@@ -45,6 +48,7 @@ impl AppState {
             jobs: Mutex::new(HashMap::new()),
             job_pids: Mutex::new(HashMap::new()),
             watcher: Mutex::new(None),
+            bg_stop: Mutex::new(Arc::new(AtomicBool::new(false))),
         })
     }
 

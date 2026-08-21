@@ -16,18 +16,21 @@ pub struct Settings {
     pub game_process_names: Vec<String>,
     pub compress_crf: u8,
     pub prefer_nvenc: bool,
+    /// When true, indexing and game sessions run in `replayboxd` (systemd user).
+    #[serde(default)]
+    pub background_service_enabled: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             watch_dir: DEFAULT_WATCH_DIR.to_string(),
-            // Empty → auto-resolve to bundled resources, then PATH.
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
             game_process_names: Vec::new(),
             compress_crf: 26,
             prefer_nvenc: true,
+            background_service_enabled: false,
         }
     }
 }
@@ -59,4 +62,15 @@ pub fn db_path(app_data: &Path) -> PathBuf {
 
 pub fn thumbs_dir(app_data: &Path) -> PathBuf {
     app_data.join("thumbnails")
+}
+
+/// XDG app data directory for the ReplayBox identifier (matches Tauri on Linux).
+pub fn resolve_app_data_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("com.williambarrence.replaybox")
 }

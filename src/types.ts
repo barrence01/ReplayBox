@@ -36,6 +36,18 @@ export interface Settings {
   gameProcessNames: string[];
   compressCrf: number;
   preferNvenc: boolean;
+  backgroundServiceEnabled: boolean;
+}
+
+export type DaemonEvent =
+  | { type: "catalogUpdated" }
+  | { type: "sessionStarted"; session: Session }
+  | { type: "sessionEnded"; session: Session; recordingCount: number };
+
+export interface BackgroundServiceStatus {
+  enabledInSettings: boolean;
+  unitActive: boolean;
+  message: string;
 }
 
 export interface TrimRequest {

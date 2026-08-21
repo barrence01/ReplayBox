@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CompressRequest,
   CopyPathInfo,
+  DaemonEvent,
+  BackgroundServiceStatus,
   JobStatus,
   Recording,
   Session,
@@ -15,6 +17,14 @@ export function getSettings() {
 
 export function updateSettings(settings: Settings) {
   return invoke<Settings>("update_settings", { settings });
+}
+
+export function backgroundServiceStatus() {
+  return invoke<BackgroundServiceStatus>("background_service_status");
+}
+
+export function drainDaemonEvents() {
+  return invoke<DaemonEvent[]>("drain_daemon_events");
 }
 
 export function listRecordings(query?: string) {

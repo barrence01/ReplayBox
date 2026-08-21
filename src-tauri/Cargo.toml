@@ -4,10 +4,15 @@ version = "0.1.0"
 description = "Game recording catalog and VFR-safe clip editor"
 authors = ["William Barrence"]
 edition = "2021"
+default-run = "replaybox"
 
 [lib]
 name = "replaybox_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "replayboxd"
+path = "src/bin/replayboxd.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

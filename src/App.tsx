@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   cancelJob,
   checkTools,
+  drainDaemonEvents,
   getRecording,
   getSettings,
   listRecordings,
@@ -11,6 +12,7 @@ import {
   updateSettings,
 } from "./lib/api";
 import type {
+  DaemonEvent,
   JobStatus,
   Recording,
   Session,
@@ -47,6 +49,31 @@ function App() {
     const list = await listSessionRecordings(sessionId);
     setSessionRecordings(list);
   }, []);
+
+  const handleDaemonEvent = useCallback(
+    (event: DaemonEvent) => {
+      if (event.type === "catalogUpdated") {
+        void refreshLibrary();
+        return;
+      }
+      if (event.type === "sessionStarted") {
+        setSession(event.session);
+        setBanner(
+          `Game session started: ${event.session.gameProcess ?? "game"}`,
+        );
+        return;
+      }
+      if (event.type === "sessionEnded") {
+        setSession(event.session);
+        void refreshSessionClips(event.session.id);
+        setView("session");
+        setBanner(
+          `Game closed — ${event.recordingCount} clip(s) in this session.`,
+        );
+      }
+    },
+    [refreshLibrary, refreshSessionClips],
+  );
 
   useEffect(() => {
     (async () => {
@@ -98,6 +125,34 @@ function App() {
       unsubs.forEach((u) => u());
     };
   }, [refreshLibrary, refreshSessionClips, session, selected]);
+
+  useEffect(() => {
+    if (!settings?.backgroundServiceEnabled) return;
+    const id = window.setInterval(() => {
+      void drainDaemonEvents()
+        .then((events) => {
+          for (const event of events) {
+            handleDaemonEvent(event);
+            if (event.type === "catalogUpdated" && session) {
+              void refreshSessionClips(session.id);
+            }
+            if (event.type === "catalogUpdated" && selected) {
+              void getRecording(selected.id).then((r) => {
+                if (r) setSelected(r);
+              });
+            }
+          }
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [
+    settings?.backgroundServiceEnabled,
+    handleDaemonEvent,
+    session,
+    selected,
+    refreshSessionClips,
+  ]);
 
   function openRecording(recording: Recording) {
     setSelected(recording);

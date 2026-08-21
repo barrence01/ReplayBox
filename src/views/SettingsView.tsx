@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Settings } from "../types";
-import { resolvedToolPaths } from "../lib/api";
+import type { BackgroundServiceStatus, Settings } from "../types";
+import { backgroundServiceStatus, resolvedToolPaths } from "../lib/api";
 
 interface Props {
   settings: Settings;
@@ -15,6 +15,8 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
+  const [serviceStatus, setServiceStatus] =
+    useState<BackgroundServiceStatus | null>(null);
 
   useEffect(() => {
     setDraft(settings);
@@ -25,6 +27,12 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       .then(([ffmpeg, ffprobe]) => setResolved({ ffmpeg, ffprobe }))
       .catch(() => setResolved({ ffmpeg: "", ffprobe: "" }));
   }, [settings, tools]);
+
+  useEffect(() => {
+    backgroundServiceStatus()
+      .then(setServiceStatus)
+      .catch(() => setServiceStatus(null));
+  }, [settings.backgroundServiceEnabled, message]);
 
   async function pickWatchDir() {
     const selected = await open({
@@ -177,6 +185,38 @@ export function SettingsView({ settings, tools, onSave }: Props) {
               </li>
             ))}
           </ul>
+
+          <label className="check" style={{ marginTop: "1rem" }}>
+            <input
+              type="checkbox"
+              checked={draft.backgroundServiceEnabled}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  backgroundServiceEnabled: e.target.checked,
+                }))
+              }
+            />
+            Run background service
+          </label>
+          <p className="hint">
+            When enabled, indexing and game sessions continue via{" "}
+            <code>replayboxd</code> (systemd user unit) while the app is
+            closed. Requires a built <code>replayboxd</code> binary. Save
+            settings to apply. For the service without a logged-in session,
+            see <code>loginctl enable-linger</code>.
+          </p>
+          {serviceStatus && (
+            <p
+              className={
+                serviceStatus.unitActive === draft.backgroundServiceEnabled
+                  ? "ok"
+                  : "hint"
+              }
+            >
+              Status: {serviceStatus.message}
+            </p>
+          )}
         </div>
 
         <button
