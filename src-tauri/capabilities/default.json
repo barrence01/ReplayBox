@@ -16,6 +16,10 @@
     {
       "identifier": "fs:scope",
       "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
     }
   ]
 }

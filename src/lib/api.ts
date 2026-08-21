@@ -33,6 +33,10 @@ export function recordingFileExists(id: string) {
   return invoke<boolean>("recording_file_exists", { id });
 }
 
+export function deleteRecording(id: string) {
+  return invoke<void>("delete_recording", { id });
+}
+
 export function resolveCopyPath(
   recordingId: string,
   kind: "trimmed" | "compressed",

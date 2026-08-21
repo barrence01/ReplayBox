@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import type { JobStatus, Recording } from "../types";
 import {
+  deleteRecording,
   formatBytes,
   formatTimestamp,
   startCompress,
@@ -11,7 +13,9 @@ import {
 } from "../lib/api";
 import { Timeline } from "../components/Timeline";
 import { ConflictModal } from "../components/ConflictModal";
-import { CompressIcon, ScissorsIcon } from "../components/icons";
+import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
+import { FolderRecordingList } from "../components/FolderRecordingList";
+import { CompressIcon, FolderIcon, ScissorsIcon } from "../components/icons";
 
 type CopyCollision = "overwrite" | "unique";
 
@@ -22,18 +26,24 @@ interface PendingConflict {
 
 interface Props {
   recording: Recording;
+  folderRecordings: Recording[];
   preferNvenc: boolean;
   jobRunning: boolean;
   onBack: () => void;
+  onOpen: (recording: Recording) => void;
+  onDeleted: () => void;
   onJobStarted: (job: JobStatus) => void;
   onMissingFile?: () => void;
 }
 
 export function EditorView({
   recording,
+  folderRecordings,
   preferNvenc,
   jobRunning,
   onBack,
+  onOpen,
+  onDeleted,
   onJobStarted,
   onMissingFile,
 }: Props) {
@@ -50,6 +60,8 @@ export function EditorView({
   const [error, setError] = useState<string | null>(null);
   const [videoSrc, setVideoSrc] = useState<string>("");
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     setStartMs(0);
@@ -57,6 +69,7 @@ export function EditorView({
     setCurrentMs(0);
     setError(null);
     setConflict(null);
+    setConfirmDelete(false);
     missingNotified.current = false;
   }, [recording.id, recording.durationMs]);
 
@@ -86,6 +99,27 @@ export function EditorView({
     setCurrentMs(ms);
     if (videoRef.current) {
       videoRef.current.currentTime = ms / 1000;
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteRecording(recording.id);
+      onDeleted();
+    } catch (e) {
+      setError(String(e));
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  }
+
+  async function openFolder() {
+    try {
+      await openPath(recording.dir);
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -186,6 +220,17 @@ export function EditorView({
           onCancel={() => setConflict(null)}
           onCreateNew={() => void resolveConflict("unique")}
           onReplace={() => void resolveConflict("overwrite")}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmDeleteModal
+          filename={recording.filename}
+          busy={deleting}
+          onCancel={() => {
+            if (!deleting) setConfirmDelete(false);
+          }}
+          onConfirm={() => void handleDelete()}
         />
       )}
 
@@ -297,76 +342,109 @@ export function EditorView({
         </div>
 
         <aside className="editor__side">
-          <h2>Details</h2>
-          <dl className="meta-list">
-            <div>
-              <dt>Duration</dt>
-              <dd>
-                {recording.durationMs != null
-                  ? formatTimestamp(recording.durationMs)
-                  : "—"}
-              </dd>
-            </div>
-            <div>
-              <dt>Resolution</dt>
-              <dd>
-                {recording.width && recording.height
-                  ? `${recording.width}×${recording.height}`
-                  : "—"}
-              </dd>
-            </div>
-            <div>
-              <dt>Size</dt>
-              <dd>{formatBytes(recording.sizeBytes)}</dd>
-            </div>
-            <div>
-              <dt>Video</dt>
-              <dd>{recording.videoCodec ?? "—"}</dd>
-            </div>
-            <div>
-              <dt>Audio</dt>
-              <dd>{recording.audioCodec ?? "—"}</dd>
-            </div>
-            <div>
-              <dt>Frame timing</dt>
-              <dd>{recording.isVfr ? "VFR" : "CFR / unknown"}</dd>
-            </div>
-          </dl>
+          <div className="editor__panel">
+            <h2>Details</h2>
+            <dl className="meta-list">
+              <div>
+                <dt>Duration</dt>
+                <dd>
+                  {recording.durationMs != null
+                    ? formatTimestamp(recording.durationMs)
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Resolution</dt>
+                <dd>
+                  {recording.width && recording.height
+                    ? `${recording.width}×${recording.height}`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Size</dt>
+                <dd>{formatBytes(recording.sizeBytes)}</dd>
+              </div>
+              <div>
+                <dt>Video</dt>
+                <dd>{recording.videoCodec ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Audio</dt>
+                <dd>{recording.audioCodec ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Frame timing</dt>
+                <dd>{recording.isVfr ? "VFR" : "CFR / unknown"}</dd>
+              </div>
+            </dl>
 
-          <h2>Trim</h2>
-          <p className="hint">
-            Timeline uses timestamps (PTS), not frame numbers — safe for VFR.
-          </p>
-          <fieldset className="radio-group">
-            <label>
-              <input
-                type="radio"
-                checked={mode === "precise"}
-                onChange={() => setMode("precise")}
-              />
-              Precise trim (re-encode, VFR-safe)
-            </label>
-            <label>
-              <input
-                type="radio"
-                checked={mode === "fast"}
-                onChange={() => setMode("fast")}
-              />
-              Fast trim — may cut on keyframe
-            </label>
-          </fieldset>
+            <button
+              type="button"
+              className="btn-danger"
+              onClick={() => setConfirmDelete(true)}
+              disabled={deleting || jobRunning}
+            >
+              Delete video
+            </button>
+          </div>
 
-          <h2>Compress</h2>
-          <label className="stack-label">
-            CRF / quality ({crf})
-            <input
-              type="range"
-              min={18}
-              max={32}
-              value={crf}
-              onChange={(e) => setCrf(Number(e.target.value))}
+          <div className="editor__panel">
+            <h2>Trim</h2>
+            <p className="hint">
+              Timeline uses timestamps (PTS), not frame numbers — safe for VFR.
+            </p>
+            <fieldset className="radio-group">
+              <label>
+                <input
+                  type="radio"
+                  checked={mode === "precise"}
+                  onChange={() => setMode("precise")}
+                />
+                Precise trim (re-encode, VFR-safe)
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={mode === "fast"}
+                  onChange={() => setMode("fast")}
+                />
+                Fast trim — may cut on keyframe
+              </label>
+            </fieldset>
+
+            <h2>Compress</h2>
+            <label className="stack-label">
+              CRF / quality ({crf})
+              <input
+                type="range"
+                min={18}
+                max={32}
+                value={crf}
+                onChange={(e) => setCrf(Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="editor__panel">
+            <div className="editor__panel-header">
+              <h2>Folder</h2>
+              <button
+                type="button"
+                className="icon-button"
+                title="Open folder"
+                aria-label="Open folder"
+                onClick={() => void openFolder()}
+              >
+                <FolderIcon size={18} />
+              </button>
+            </div>
+            <FolderRecordingList
+              recordings={folderRecordings}
+              currentId={recording.id}
+              onOpen={onOpen}
             />
-          </label>
+          </div>
         </aside>
       </div>
     </section>

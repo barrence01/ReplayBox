@@ -87,6 +87,7 @@ pub fn run() {
             commands::list_session_recordings,
             commands::get_recording,
             commands::recording_file_exists,
+            commands::delete_recording,
             commands::resolve_copy_path,
             commands::get_active_session,
             commands::rescan_library,

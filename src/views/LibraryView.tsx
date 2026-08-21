@@ -7,6 +7,11 @@ import {
   recordingsInFolder,
   type GameFolder,
 } from "../lib/libraryFolders";
+import {
+  compareTimestamps,
+  sortRecordings,
+  type SortOrder,
+} from "../lib/sortRecordings";
 
 interface Props {
   watchDir: string;
@@ -26,6 +31,7 @@ export function LibraryView({
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<GameFolder | null>(null);
+  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
 
   const folders = useMemo(
     () => listGameFolders(watchDir, recordings),
@@ -34,21 +40,40 @@ export function LibraryView({
 
   const filteredFolders = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return folders;
-    return folders.filter((f) => f.name.toLowerCase().includes(q));
-  }, [folders, query]);
+    const list = q
+      ? folders.filter((f) => f.name.toLowerCase().includes(q))
+      : folders;
+    return [...list].sort((a, b) => {
+      const aRoot = a.name === "(Root)";
+      const bRoot = b.name === "(Root)";
+      if (aRoot !== bRoot) return aRoot ? -1 : 1;
+      const byTime = compareTimestamps(
+        a.latestModifiedAt,
+        b.latestModifiedAt,
+        sortOrder,
+      );
+      if (byTime !== 0) return byTime;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+  }, [folders, query, sortOrder]);
 
   const folderRecordings = useMemo(() => {
     if (!selectedFolder) return [];
-    const list = recordingsInFolder(recordings, selectedFolder.path);
-    const q = query.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter(
-      (r) =>
-        r.filename.toLowerCase().includes(q) ||
-        r.dir.toLowerCase().includes(q),
+    const list = recordingsInFolder(
+      recordings,
+      selectedFolder.path,
+      watchDir,
     );
-  }, [selectedFolder, recordings, query]);
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? list.filter(
+          (r) =>
+            r.filename.toLowerCase().includes(q) ||
+            r.dir.toLowerCase().includes(q),
+        )
+      : list;
+    return sortRecordings(filtered, sortOrder);
+  }, [selectedFolder, recordings, query, watchDir, sortOrder]);
 
   return (
     <section className="view">
@@ -80,12 +105,21 @@ export function LibraryView({
           </p>
         </div>
         <div className="view__actions">
+          <label className="sort-select">
+            <span className="sr-only">Sort order</span>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+              aria-label="Sort order"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </label>
           <input
             type="search"
             placeholder={
-              selectedFolder
-                ? "Search recordings…"
-                : "Search folders…"
+              selectedFolder ? "Search recordings…" : "Search folders…"
             }
             value={query}
             onChange={(e) => setQuery(e.target.value)}

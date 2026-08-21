@@ -69,6 +69,40 @@ pub fn recording_file_exists(
     }
 }
 
+/// Delete a recording file from disk, its thumbnail, and the catalog row.
+#[tauri::command]
+pub fn delete_recording(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    let recording = {
+        let conn = state.db.lock();
+        db::get_recording_by_id(&conn, &id)?
+            .ok_or_else(|| "Recording not found".to_string())?
+    };
+
+    let path = Path::new(&recording.path);
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|e| format!("Failed to delete file: {e}"))?;
+    }
+
+    if let Some(ref thumb) = recording.thumbnail_path {
+        let thumb_path = Path::new(thumb);
+        if thumb_path.exists() {
+            let _ = std::fs::remove_file(thumb_path);
+        }
+    }
+
+    {
+        let conn = state.db.lock();
+        let _ = db::delete_recording_by_id(&conn, &id)?;
+    }
+
+    let _ = app.emit("catalog-updated", ());
+    Ok(())
+}
+
 /// Default copy destination for a recording (`trimmed` or `compressed`).
 #[tauri::command]
 pub fn resolve_copy_path(

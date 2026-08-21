@@ -268,6 +268,10 @@ select {
   gap: 0.5rem;
 }
 
+.modal__actions .btn-danger {
+  margin-top: 0;
+}
+
 .main {
   grid-column: 2;
   overflow: auto;
@@ -280,6 +284,7 @@ select {
 
 .view.editor {
   padding-top: 0;
+  max-width: 100%;
 }
 
 .view__header {
@@ -288,11 +293,18 @@ select {
   align-items: flex-start;
   gap: 1rem;
   margin-bottom: 1.25rem;
+  min-width: 0;
+}
+
+.view__header > div {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .view__header h1 {
   margin: 0 0 0.25rem;
   font-size: 1.6rem;
+  overflow-wrap: anywhere;
 }
 
 .view__header p,
@@ -434,9 +446,13 @@ select {
 
 .editor__layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.9fr);
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr);
   gap: 1.25rem;
   align-items: start;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: clip;
 }
 
 .editor__toolbar {
@@ -453,6 +469,10 @@ select {
   margin-bottom: 0;
 }
 
+.editor__player {
+  min-width: 0;
+}
+
 .editor__player video {
   width: 100%;
   max-height: 52vh;
@@ -462,32 +482,73 @@ select {
 }
 
 .editor__side {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.editor__panel {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
-.editor__side h2 {
+.editor__panel h2 {
   margin: 1rem 0 0.5rem;
   font-size: 1rem;
 }
 
-.editor__side h2:first-child {
+.editor__panel h2:first-child {
   margin-top: 0;
+}
+
+.editor__panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.editor__panel-header h2 {
+  margin: 0;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+  flex-shrink: 0;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--border);
 }
 
 .meta-list {
   margin: 0;
   display: grid;
   gap: 0.45rem;
+  min-width: 0;
 }
 
 .meta-list > div {
   display: grid;
-  grid-template-columns: 110px 1fr;
+  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
   gap: 0.5rem;
   font-size: 0.92rem;
+  min-width: 0;
 }
 
 .meta-list dt {
@@ -496,6 +557,109 @@ select {
 
 .meta-list dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.btn-danger {
+  margin-top: 0.85rem;
+  max-width: 100%;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+.btn-danger:disabled {
+  opacity: 0.55;
+}
+
+.folder-recording-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+  max-height: 220px;
+  overflow-x: clip;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.folder-recording-list__item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 0.35rem 0.45rem;
+  background: var(--bg-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.folder-recording-list__item:hover:not(:disabled) {
+  border-color: var(--border);
+}
+
+.folder-recording-list__item.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-soft));
+}
+
+.folder-recording-list__thumb {
+  width: 64px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0a0d13;
+}
+
+.folder-recording-list__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.folder-recording-list__placeholder {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: 0.65rem;
+  text-align: center;
+  padding: 0.15rem;
+}
+
+.folder-recording-list__name {
+  font-size: 0.85rem;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-select select {
+  min-width: 9.5rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .radio-group {
@@ -504,6 +668,7 @@ select {
   margin: 0.4rem 0;
   display: grid;
   gap: 0.4rem;
+  min-width: 0;
 }
 
 .radio-group label,
@@ -512,12 +677,19 @@ select {
   gap: 0.45rem;
   align-items: flex-start;
   font-size: 0.92rem;
+  min-width: 0;
+}
+
+.radio-group label {
+  overflow-wrap: anywhere;
 }
 
 .stack-label {
   display: grid;
   gap: 0.35rem;
   margin-bottom: 0.9rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .editor__actions {

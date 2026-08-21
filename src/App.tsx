@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelJob,
@@ -23,6 +23,8 @@ import { SessionView } from "./views/SessionView";
 import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
 import { JobBar } from "./components/JobBar";
+import { recordingsInExactDir } from "./lib/libraryFolders";
+import { sortRecordings } from "./lib/sortRecordings";
 import "./App.css";
 
 function App() {
@@ -101,6 +103,14 @@ function App() {
     setSelected(recording);
     setView("editor");
   }
+
+  const folderRecordings = useMemo(() => {
+    if (!selected) return [];
+    return sortRecordings(
+      recordingsInExactDir(recordings, selected.dir),
+      "newest",
+    );
+  }, [recordings, selected]);
 
   return (
     <div className="app">
@@ -183,10 +193,18 @@ function App() {
         {view === "editor" && selected && (
           <EditorView
             recording={selected}
+            folderRecordings={folderRecordings}
             preferNvenc={settings?.preferNvenc ?? true}
             jobRunning={job?.status === "running"}
             onJobStarted={setJob}
             onBack={() => setView("library")}
+            onOpen={openRecording}
+            onDeleted={() => {
+              setSelected(null);
+              setView("library");
+              void refreshLibrary();
+              setBanner("Recording deleted.");
+            }}
             onMissingFile={async () => {
               try {
                 await rescanLibrary();
