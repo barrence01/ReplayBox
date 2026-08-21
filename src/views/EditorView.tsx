@@ -15,7 +15,7 @@ import { Timeline } from "../components/Timeline";
 import { ConflictModal } from "../components/ConflictModal";
 import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
 import { FolderRecordingList } from "../components/FolderRecordingList";
-import { CompressIcon, FolderIcon, ScissorsIcon } from "../components/icons";
+import { CompressIcon, FolderIcon, PauseIcon, PlayIcon, ScissorsIcon } from "../components/icons";
 
 type CopyCollision = "overwrite" | "unique";
 
@@ -62,6 +62,7 @@ export function EditorView({
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
     setStartMs(0);
@@ -70,6 +71,7 @@ export function EditorView({
     setError(null);
     setConflict(null);
     setConfirmDelete(false);
+    setPlaying(false);
     missingNotified.current = false;
   }, [recording.id, recording.durationMs]);
 
@@ -95,11 +97,70 @@ export function EditorView({
     };
   }, [recording.path]);
 
-  function seekTo(ms: number) {
-    setCurrentMs(ms);
-    if (videoRef.current) {
-      videoRef.current.currentTime = ms / 1000;
+  function clampToSelection(ms: number, start = startMs, end = endMs): number {
+    return Math.min(Math.max(ms, start), end);
+  }
+
+  function seekTo(ms: number, start = startMs, end = endMs) {
+    const clamped = clampToSelection(ms, start, end);
+    setCurrentMs(clamped);
+    const video = videoRef.current;
+    if (video && video.readyState >= 1) {
+      video.currentTime = clamped / 1000;
     }
+  }
+
+  async function togglePlayback() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!video.paused) {
+      video.pause();
+      return;
+    }
+    const ms = video.currentTime * 1000;
+    if (ms < startMs || ms >= endMs) {
+      const targetSec = startMs / 1000;
+      setCurrentMs(startMs);
+      if (video.readyState >= 1) {
+        if (Math.abs(video.currentTime - targetSec) > 0.01) {
+          await new Promise<void>((resolve) => {
+            const onSeeked = () => {
+              video.removeEventListener("seeked", onSeeked);
+              resolve();
+            };
+            video.addEventListener("seeked", onSeeked);
+            video.currentTime = targetSec;
+          });
+        } else {
+          video.currentTime = targetSec;
+        }
+      }
+    }
+    try {
+      await video.play();
+    } catch (e) {
+      setError(`Playback failed: ${String(e)}`);
+    }
+  }
+
+  function handleTimeUpdate() {
+    const video = videoRef.current;
+    if (!video) return;
+    const ms = video.currentTime * 1000;
+    if (!video.paused && ms >= endMs) {
+      video.pause();
+      seekTo(startMs);
+      return;
+    }
+    if (ms > endMs) {
+      seekTo(endMs);
+      return;
+    }
+    if (ms < startMs) {
+      seekTo(startMs);
+      return;
+    }
+    setCurrentMs(ms);
   }
 
   async function handleDelete() {
@@ -247,18 +308,19 @@ export function EditorView({
         </div>
       </header>
 
+      {error && <p className="error">{error}</p>}
+
       <div className="editor__layout">
         <div className="editor__player">
           <video
             ref={videoRef}
             key={videoSrc}
             src={videoSrc || undefined}
-            controls
-            onTimeUpdate={() => {
-              if (videoRef.current) {
-                setCurrentMs(videoRef.current.currentTime * 1000);
-              }
-            }}
+            onClick={() => void togglePlayback()}
+            onLoadedMetadata={() => seekTo(currentMs)}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onTimeUpdate={handleTimeUpdate}
             onError={() => {
               setError(
                 "Video playback failed. Check that the file exists and the media server is running.",
@@ -272,6 +334,23 @@ export function EditorView({
               });
             }}
           />
+          <div className="editor__transport">
+            <button
+              type="button"
+              className="icon-button"
+              title={playing ? "Pause" : "Play"}
+              aria-label={playing ? "Pause" : "Play"}
+              onClick={() => void togglePlayback()}
+            >
+              {playing ? <PauseIcon size={20} /> : <PlayIcon size={20} />}
+            </button>
+            <span className="editor__transport-time">
+              {formatTimestamp(currentMs)}
+            </span>
+            <span className="muted editor__transport-range">
+              {formatTimestamp(startMs)} – {formatTimestamp(endMs)}
+            </span>
+          </div>
           <Timeline
             durationMs={durationMs || 1}
             startMs={startMs}
@@ -279,9 +358,14 @@ export function EditorView({
             currentMs={currentMs}
             onStartChange={(ms) => {
               setStartMs(ms);
-              seekTo(ms);
+              seekTo(ms, ms, endMs);
             }}
-            onEndChange={setEndMs}
+            onEndChange={(ms) => {
+              setEndMs(ms);
+              if (currentMs > ms) {
+                seekTo(ms, startMs, ms);
+              }
+            }}
             onSeek={seekTo}
           />
 
@@ -338,7 +422,42 @@ export function EditorView({
             </label>
           </div>
 
-          {error && <p className="error">{error}</p>}
+          <div className="editor__job-options">
+            <h2>Trim</h2>
+            <p className="hint">
+              Timeline uses timestamps (PTS), not frame numbers — safe for VFR.
+            </p>
+            <fieldset className="radio-group">
+              <label>
+                <input
+                  type="radio"
+                  checked={mode === "precise"}
+                  onChange={() => setMode("precise")}
+                />
+                Precise trim (re-encode, VFR-safe)
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={mode === "fast"}
+                  onChange={() => setMode("fast")}
+                />
+                Fast trim — may cut on keyframe
+              </label>
+            </fieldset>
+
+            <h2>Compress</h2>
+            <label className="stack-label">
+              CRF / quality ({crf})
+              <input
+                type="range"
+                min={18}
+                max={32}
+                value={crf}
+                onChange={(e) => setCrf(Number(e.target.value))}
+              />
+            </label>
+          </div>
         </div>
 
         <aside className="editor__side">
@@ -387,43 +506,6 @@ export function EditorView({
             >
               Delete video
             </button>
-          </div>
-
-          <div className="editor__panel">
-            <h2>Trim</h2>
-            <p className="hint">
-              Timeline uses timestamps (PTS), not frame numbers — safe for VFR.
-            </p>
-            <fieldset className="radio-group">
-              <label>
-                <input
-                  type="radio"
-                  checked={mode === "precise"}
-                  onChange={() => setMode("precise")}
-                />
-                Precise trim (re-encode, VFR-safe)
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  checked={mode === "fast"}
-                  onChange={() => setMode("fast")}
-                />
-                Fast trim — may cut on keyframe
-              </label>
-            </fieldset>
-
-            <h2>Compress</h2>
-            <label className="stack-label">
-              CRF / quality ({crf})
-              <input
-                type="range"
-                min={18}
-                max={32}
-                value={crf}
-                onChange={(e) => setCrf(Number(e.target.value))}
-              />
-            </label>
           </div>
 
           <div className="editor__panel">

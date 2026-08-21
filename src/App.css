@@ -479,6 +479,28 @@ select {
   background: #000;
   border-radius: var(--radius);
   border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.editor__transport {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+  min-width: 0;
+}
+
+.editor__transport-time {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.editor__transport-range {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
 }
 
 .editor__side {
@@ -730,6 +752,23 @@ select {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.editor__job-options {
+  margin-top: 1rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.editor__job-options h2 {
+  margin: 1rem 0 0.5rem;
+  font-size: 1rem;
+}
+
+.editor__job-options h2:first-child {
+  margin-top: 0;
 }
 
 .editor__output-legend {

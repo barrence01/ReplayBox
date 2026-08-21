@@ -43,7 +43,8 @@ export function Timeline({
             1,
             Math.max(0, (e.clientX - rect.left) / rect.width),
           );
-          onSeek(ratio * duration);
+          const ms = ratio * duration;
+          onSeek(Math.min(Math.max(ms, startMs), endMs));
         }}
       >
         <div
