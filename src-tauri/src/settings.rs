@@ -12,13 +12,10 @@ pub struct Settings {
     pub watch_dir: String,
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
-    /// Process names (comm / cmdline substrings) that mark an active game session.
-    pub game_process_names: Vec<String>,
     pub compress_crf: u8,
     pub prefer_nvenc: bool,
-    /// When true, indexing and game sessions run in `replayboxd` (systemd user).
     #[serde(default)]
-    pub background_service_enabled: bool,
+    pub launch_on_startup: bool,
 }
 
 impl Default for Settings {
@@ -27,10 +24,9 @@ impl Default for Settings {
             watch_dir: DEFAULT_WATCH_DIR.to_string(),
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
-            game_process_names: Vec::new(),
             compress_crf: 26,
             prefer_nvenc: true,
-            background_service_enabled: false,
+            launch_on_startup: false,
         }
     }
 }
@@ -62,17 +58,6 @@ pub fn db_path(app_data: &Path) -> PathBuf {
 
 pub fn thumbs_dir(app_data: &Path) -> PathBuf {
     app_data.join("thumbnails")
-}
-
-/// XDG app data directory for the ReplayBox identifier (matches Tauri on Linux).
-pub fn resolve_app_data_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("com.williambarrence.replaybox")
 }
 
 /// Ensure the watch folder exists, is a directory, and is readable.
@@ -165,10 +150,34 @@ mod tests {
         settings.watch_dir = "/tmp/recordings".to_string();
         settings.compress_crf = 22;
         settings.prefer_nvenc = false;
+        settings.launch_on_startup = true;
         settings.save(&path).unwrap();
         let loaded = Settings::load(&path);
         assert_eq!(loaded.watch_dir, "/tmp/recordings");
         assert_eq!(loaded.compress_crf, 22);
         assert!(!loaded.prefer_nvenc);
+        assert!(loaded.launch_on_startup);
+    }
+
+    #[test]
+    fn load_ignores_legacy_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+              "watchDir": "/videos",
+              "ffmpegPath": "",
+              "ffprobePath": "",
+              "compressCrf": 26,
+              "preferNvenc": true,
+              "gameProcessNames": ["cs2"],
+              "backgroundServiceEnabled": true
+            }"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.watch_dir, "/videos");
+        assert!(!loaded.launch_on_startup);
     }
 }

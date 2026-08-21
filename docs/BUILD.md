@@ -2,13 +2,13 @@
 
 Build instructions for ReplayBox — see the [README](../README.md) for the project overview.
 
-This guide covers a full production build: host packages, downloads, bundled FFmpeg, the `replayboxd` sidecar, and the Tauri app.
+This guide covers a full production build: host packages, downloads, bundled FFmpeg, and the Tauri app.
 
 ## Quick start
 
 ```bash
 # From the repository root
-chmod +x scripts/build-all.sh scripts/stage-daemon.sh   # once
+chmod +x scripts/build-all.sh   # once
 ./scripts/build-all.sh
 ```
 
@@ -27,68 +27,49 @@ npm run tauri:dev
 That command:
 
 1. Prepares bundled FFmpeg (`prepare:ffmpeg`)
-2. Stages `replayboxd` as a Tauri `externalBin` sidecar (`stage:daemon`)
-3. Starts the Tauri + Vite dev app
+2. Starts the Tauri + Vite dev app
 
 ## Binaries
 
-The `src-tauri` crate defines two binaries. `Cargo.toml` sets `default-run = "replaybox"`.
+The `src-tauri` crate defines one binary. `Cargo.toml` sets `default-run = "replaybox"`.
 
 | Binary | Path | Purpose |
 |--------|------|---------|
 | `replaybox` | `src/main.rs` | Tauri UI |
-| `replayboxd` | `src/bin/replayboxd.rs` | Background daemon (watch folder + game process sessions) |
 
 ```bash
-# From the repository root (preferred)
-npm run build:daemon
-npm run stage:daemon           # debug → src-tauri/binaries/replayboxd-<host-triple>
-npm run stage:daemon:release   # release (used by tauri:build / build-all)
-
 cd src-tauri
 cargo run --bin replaybox
 cargo run                      # same as --bin replaybox
-cargo run --bin replayboxd
 ```
 
 Do **not** run bare `cargo build` / `cargo run` from the repo root — `Cargo.toml` lives under `src-tauri/`. Use the npm scripts or `--manifest-path src-tauri/Cargo.toml`.
 
-`stage:daemon` creates a placeholder under `src-tauri/binaries/` if needed so Tauri’s build script accepts `externalBin`, then builds and overwrites with the real binary. Staged `binaries/replayboxd-*` files are gitignored (`.gitkeep` remains).
+## Library indexing
 
-Without `--bin` or `default-run`, Cargo errors with *could not determine which binary to run* when both binaries exist.
+On process start, ReplayBox:
 
-### Background service (`replayboxd`)
+1. Serves the UI from the last SQLite catalog (cache)
+2. Runs `scan_library` asynchronously and emits `catalog-updated` when finished
 
-Flow:
+There is no continuous folder watcher. Use **Rescan** in the Library (or restart the app) to pick up new files. Closing the window hides to the system tray without re-indexing.
 
-1. `npm run tauri:dev` or `npm run stage:daemon` so a source binary exists (sidecar beside the app, `target/…/replayboxd`, or `binaries/replayboxd-*`).
-2. Settings → **Run background service** → Save.
-3. The app **copies** the daemon to:
+## System tray
 
-   `~/.local/share/com.williambarrence.replaybox/bin/replayboxd`
+The tray icon (StatusNotifier / AppIndicator on Linux) provides **Show** and **Quit**. Closing the main window hides the app; **Quit** exits the process.
 
-4. It writes `~/.config/systemd/user/replayboxd.service` with `ExecStart=` set to that installed path, then runs `systemctl --user enable --now replayboxd`.
+On GNOME, install an AppIndicator/StatusNotifier package if tray icons are not visible (e.g. `libayatana-appindicator` / `libappindicator-gtk3` depending on the distro). KDE Plasma typically works via StatusNotifier.
 
-**AppImage note:** never point systemd at a path inside an AppImage mount (`/tmp/.mount_*`). Those disappear when the AppImage is not running. Install-to-app-data is what keeps the service valid for future AppImage bundles.
+## Launch on login
 
-On startup with the service enabled, ReplayBox refreshes the installed binary if the source is newer and restarts the unit when needed.
-
-Useful checks:
-
-```bash
-systemctl --user status replayboxd
-systemctl --user cat replayboxd    # ExecStart should be under ~/.local/share/.../bin/
-```
-
-If you need the user service without an active graphical login session, see `loginctl enable-linger`.
+Settings → **Start ReplayBox when you log in** uses XDG Autostart (`tauri-plugin-autostart`). Saving syncs `~/.config/autostart/`.
 
 ## What `build-all` does
 
 1. Verifies host tools (`node`, `npm`, `cargo`, `rustc`, `git`, `make`, `pkg-config`, **`nasm`**, **libx264**)
 2. Runs `npm install`
 3. Runs `npm run prepare:ffmpeg`
-4. Stages release `replayboxd` for `externalBin` (`stage:daemon:release`)
-5. Runs `npm run tauri:build` (frontend + Rust + app bundle; stages daemon again via `beforeBuildCommand`)
+4. Runs `npm run tauri:build` (frontend + Rust + app bundle)
 
 ## System packages (install yourself)
 
@@ -118,11 +99,12 @@ sudo pacman -S --needed \
 
 - **`nasm`** — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
 - **`x264`** — required for `--enable-libx264` in the bundled FFmpeg build.
+- **`libappindicator-gtk3`** — recommended for system tray icons.
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
 
 ### Other distros
 
-Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node.js 18+, Rust, and Tauri Linux dependencies ([Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
+Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node.js 18+, Rust, AppIndicator/StatusNotifier support, and Tauri Linux dependencies ([Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
 
 ## What gets downloaded / generated automatically
 
@@ -132,9 +114,7 @@ Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node
 | **FFmpeg source** (Git tag `n7.1`) | First `prepare:ffmpeg` (cache miss) | `.cache/ffmpeg/src/` | Cloned from GitHub mirror (fallback: `git.ffmpeg.org`) |
 | **Compiled FFmpeg / FFprobe** | Same build | `.cache/ffmpeg/n7.1-<arch>-<fingerprint>/` | Cached; later runs only copy |
 | **Staged FFmpeg tools** | Every prepare | `src-tauri/resources/ffmpeg/{ffmpeg,ffprobe}` | Used by the app / Tauri bundle |
-| **Staged `replayboxd` sidecar** | `stage:daemon` / `tauri:dev` / `tauri:build` | `src-tauri/binaries/replayboxd-<triple>` | Tauri `externalBin`; gitignored |
 | **Rust crates** | `cargo` / `tauri build` | Cargo registry + target dir | Downloaded by Cargo as needed |
-| **Installed daemon (runtime)** | Enable background service | `~/.local/share/com.williambarrence.replaybox/bin/replayboxd` | systemd `ExecStart` target |
 | **App binary / installers** | `tauri build` | `src-tauri/target/release/` (+ bundle formats if enabled) | Production output |
 
 ### FFmpeg cache behavior
@@ -150,12 +130,9 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 | Command | Purpose |
 |---------|---------|
 | `npm run prepare:ffmpeg` | Build/stage bundled FFmpeg only |
-| `npm run build:daemon` | `cargo build --bin replayboxd` via manifest path |
-| `npm run stage:daemon` | Build debug daemon + copy to `binaries/replayboxd-<triple>` |
-| `npm run stage:daemon:release` | Same for release (production) |
-| `npm run tauri:dev` | FFmpeg + stage daemon + Tauri/Vite dev |
-| `npm run tauri:build` | FFmpeg + stage release daemon + production Tauri build |
-| `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + stage + production build |
+| `npm run tauri:dev` | FFmpeg + Tauri/Vite dev |
+| `npm run tauri:build` | FFmpeg + production Tauri build |
+| `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + production build |
 
 ## License note (bundled FFmpeg)
 
@@ -166,11 +143,8 @@ The bundled FFmpeg is configured with **`--enable-gpl`** and **libx264**. Distri
 | Symptom | Likely cause |
 |---------|----------------|
 | `could not find Cargo.toml` in repo root | Run npm scripts from the root, or `cd src-tauri` / use `--manifest-path` |
-| `could not determine which binary to run` | Use `--bin replaybox` or rely on `default-run`; or `npm run tauri:dev` |
 | `resource path .../ffmpeg doesn't exist` | Run `npm run prepare:ffmpeg` |
-| `resource path .../binaries/replayboxd-... doesn't exist` | Run `npm run stage:daemon` (or `tauri:dev` / `tauri:build`) |
-| `replayboxd binary not found` when enabling the service | Stage/build the daemon first, then Save settings again |
-| Unit active but `ExecStart` under `/tmp/.mount_*` | Old unit; disable/re-enable the background service so it reinstalls under app data |
+| Tray icon missing on GNOME | Install AppIndicator/StatusNotifier support for your DE |
 | `nasm is required to build bundled FFmpeg` | Install `nasm` |
 | `libx264 not found` | Install `x264` (and headers / pkg-config file) |
 | Slow first build | Normal: compiling FFmpeg from source can take several minutes |

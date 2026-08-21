@@ -1,18 +1,14 @@
-use crate::background_events::{self, BackgroundEvent};
-use crate::background_service::{self, BackgroundServiceStatus};
 use crate::catalog;
 use crate::db;
 use crate::ffmpeg;
-use crate::models::{
-    CompressRequest, CopyPathInfo, JobStatus, Recording, Session, TrimRequest,
-};
+use crate::models::{CompressRequest, CopyPathInfo, JobStatus, Recording, TrimRequest};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
-use crate::watcher;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
 
 #[tauri::command]
@@ -35,28 +31,25 @@ pub fn update_settings(
     settings::validate_watch_dir(&settings.watch_dir)?;
     let path = settings::settings_path(&state.app_data);
     settings.save(&path)?;
-    let enabled = settings.background_service_enabled;
     *state.settings.lock() = settings.clone();
-    background_service::sync_runtime(&app, &state, enabled)?;
-    if !enabled {
-        let _ = watcher::rewatch(&state);
-    }
+    sync_autostart(&app, settings.launch_on_startup)?;
     Ok(settings)
 }
 
-#[tauri::command]
-pub fn background_service_status(
-    state: State<'_, Arc<AppState>>,
-) -> BackgroundServiceStatus {
-    let enabled = state.settings.lock().background_service_enabled;
-    background_service::status(enabled)
+fn sync_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let autostart = app.autolaunch();
+    let currently = autostart.is_enabled().map_err(|e| e.to_string())?;
+    if enabled && !currently {
+        autostart.enable().map_err(|e| e.to_string())?;
+    } else if !enabled && currently {
+        autostart.disable().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
-#[tauri::command]
-pub fn drain_daemon_events(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<BackgroundEvent>, String> {
-    background_events::drain_events(&state.app_data)
+/// Apply saved launch-on-startup preference during app setup.
+pub fn sync_autostart_on_boot(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    sync_autostart(app, enabled)
 }
 
 #[tauri::command]
@@ -66,15 +59,6 @@ pub fn list_recordings(
 ) -> Result<Vec<Recording>, String> {
     let conn = state.db.lock();
     db::list_recordings(&conn, query.as_deref())
-}
-
-#[tauri::command]
-pub fn list_session_recordings(
-    state: State<'_, Arc<AppState>>,
-    session_id: String,
-) -> Result<Vec<Recording>, String> {
-    let conn = state.db.lock();
-    db::list_session_recordings(&conn, &session_id)
 }
 
 #[tauri::command]
@@ -163,16 +147,6 @@ pub fn resolve_copy_path(
 }
 
 #[tauri::command]
-pub fn get_active_session(state: State<'_, Arc<AppState>>) -> Option<Session> {
-    state.active_session.lock().as_ref().map(|s| Session {
-        id: s.id.clone(),
-        started_at: String::new(),
-        ended_at: None,
-        game_process: Some(s.game_process.clone()),
-    })
-}
-
-#[tauri::command]
 pub fn rescan_library(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
     let settings = {
         let mut s = state.settings.lock().clone();
@@ -186,18 +160,8 @@ pub fn rescan_library(state: State<'_, Arc<AppState>>) -> Result<usize, String> 
             settings.ffprobe_path
         ));
     }
-    let session_id = state
-        .active_session
-        .lock()
-        .as_ref()
-        .map(|s| s.id.clone());
     let conn = state.db.lock();
-    catalog::scan_library(
-        &conn,
-        &settings,
-        &state.app_data,
-        session_id.as_deref(),
-    )
+    catalog::scan_library(&conn, &settings, &state.app_data)
 }
 
 #[tauri::command]
@@ -537,11 +501,6 @@ fn finalize_job(
                 let mut settings = state.settings.lock().clone();
                 settings.ffmpeg_path = state.ffmpeg_bin();
                 settings.ffprobe_path = state.ffprobe_bin();
-                let session_id = state
-                    .active_session
-                    .lock()
-                    .as_ref()
-                    .map(|s| s.id.clone());
                 let conn = state.db.lock();
 
                 if path.to_string_lossy() != original_path
@@ -550,13 +509,7 @@ fn finalize_job(
                     let _ = db::delete_recording_by_path(&conn, original_path);
                 }
 
-                let _ = catalog::index_file(
-                    &conn,
-                    &settings,
-                    &state.app_data,
-                    &path,
-                    session_id.as_deref(),
-                );
+                let _ = catalog::index_file(&conn, &settings, &state.app_data, &path);
             }
             Err(e) => {
                 job.status = "error".into();

@@ -25,15 +25,6 @@ pub struct Recording {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Session {
-    pub id: String,
-    pub started_at: String,
-    pub ended_at: Option<String>,
-    pub game_process: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TrimRequest {
     pub recording_id: String,
     /// Trim start in milliseconds (timeline uses PTS/time, not frames).
@@ -75,11 +66,4 @@ pub struct JobStatus {
     pub progress: f64,
     pub message: Option<String>,
     pub output_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionEndedEvent {
-    pub session: Session,
-    pub recording_count: usize,
 }

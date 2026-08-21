@@ -43,11 +43,8 @@ npm install
 echo "==> Preparing bundled FFmpeg/FFprobe (cached when possible)"
 npm run prepare:ffmpeg
 
-echo "==> Staging replayboxd for Tauri externalBin"
-npm run stage:daemon:release
-
 echo "==> Building ReplayBox (Tauri production bundle)"
-# prepare:ffmpeg / stage:daemon run again inside tauri:build; second runs are cache hits.
+# prepare:ffmpeg runs again inside tauri:build; second run is a cache hit.
 npm run tauri:build
 
 echo "==> Done"

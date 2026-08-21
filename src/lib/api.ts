@@ -2,11 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CompressRequest,
   CopyPathInfo,
-  DaemonEvent,
-  BackgroundServiceStatus,
   JobStatus,
   Recording,
-  Session,
   Settings,
   TrimRequest,
 } from "../types";
@@ -23,20 +20,8 @@ export function updateSettings(settings: Settings) {
   return invoke<Settings>("update_settings", { settings });
 }
 
-export function backgroundServiceStatus() {
-  return invoke<BackgroundServiceStatus>("background_service_status");
-}
-
-export function drainDaemonEvents() {
-  return invoke<DaemonEvent[]>("drain_daemon_events");
-}
-
 export function listRecordings(query?: string) {
   return invoke<Recording[]>("list_recordings", { query: query ?? null });
-}
-
-export function listSessionRecordings(sessionId: string) {
-  return invoke<Recording[]>("list_session_recordings", { sessionId });
 }
 
 export function getRecording(id: string) {
@@ -56,10 +41,6 @@ export function resolveCopyPath(
   kind: "trimmed" | "compressed",
 ) {
   return invoke<CopyPathInfo>("resolve_copy_path", { recordingId, kind });
-}
-
-export function getActiveSession() {
-  return invoke<Session | null>("get_active_session");
 }
 
 export function rescanLibrary() {

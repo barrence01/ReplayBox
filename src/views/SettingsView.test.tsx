@@ -7,7 +7,6 @@ import { SettingsView } from "../views/SettingsView";
 const openMock = vi.fn();
 const checkWatchDirMock = vi.fn();
 const resolvedToolPathsMock = vi.fn();
-const backgroundServiceStatusMock = vi.fn();
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
@@ -16,18 +15,15 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("../lib/api", () => ({
   checkWatchDir: (...args: unknown[]) => checkWatchDirMock(...args),
   resolvedToolPaths: (...args: unknown[]) => resolvedToolPathsMock(...args),
-  backgroundServiceStatus: (...args: unknown[]) =>
-    backgroundServiceStatusMock(...args),
 }));
 
 const baseSettings: Settings = {
   watchDir: "/recordings",
   ffmpegPath: "",
   ffprobePath: "",
-  gameProcessNames: [],
   compressCrf: 26,
   preferNvenc: true,
-  backgroundServiceEnabled: false,
+  launchOnStartup: false,
 };
 
 describe("SettingsView watch folder access", () => {
@@ -39,11 +35,6 @@ describe("SettingsView watch folder access", () => {
     openMock.mockReset();
     checkWatchDirMock.mockReset();
     resolvedToolPathsMock.mockResolvedValue(["", ""]);
-    backgroundServiceStatusMock.mockResolvedValue({
-      enabled: false,
-      unitActive: false,
-      message: "inactive",
-    });
   });
 
   it("applies browsed path when checkWatchDir succeeds", async () => {

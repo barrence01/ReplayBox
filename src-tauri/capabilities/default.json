@@ -6,9 +6,14 @@
   "permissions": [
     "core:default",
     "core:event:default",
+    "core:tray:default",
+    "core:menu:default",
     "opener:default",
     "dialog:default",
     "fs:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     {
       "identifier": "fs:allow-read",
       "allow": [{ "path": "**" }]

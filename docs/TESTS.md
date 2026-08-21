@@ -40,7 +40,7 @@ Rust unit tests use in-module `#[cfg(test)]` blocks (for example in `settings.rs
 | TypeScript helpers / views | Vitest | Pure `src/lib/*` logic; Settings watch-folder UX with mocks |
 | Rust library | `cargo test` | Path/settings validation, catalog helpers, FFmpeg path/JSON parse helpers, SQLite CRUD, tool resolution |
 
-Not covered by unit tests (intentionally): live FFmpeg jobs, notify watcher, systemd/`replayboxd`, full Tauri command integration, Playwright-style E2E.
+Not covered by unit tests (intentionally): live FFmpeg jobs, full Tauri command integration, Playwright-style E2E.
 
 ---
 
@@ -64,7 +64,7 @@ Not covered by unit tests (intentionally): live FFmpeg jobs, notify watcher, sys
 **Do not unit-test (or defer)**
 
 - Thin `invoke` wrappers that only forward to Tauri.
-- OS-heavy code: filesystem watchers, process monitors, systemd install, media HTTP server under load.
+- OS-heavy code: tray/autostart edge cases, media HTTP server under load.
 - Full FFmpeg encode/decode pipelines (prefer extracting parse/helpers and testing those).
 
 ### Frontend conventions
@@ -97,4 +97,4 @@ Not covered by unit tests (intentionally): live FFmpeg jobs, notify watcher, sys
 
 ### Out of scope for this document
 
-Integration and system tests (daemon, watcher, real FFmpeg jobs, E2E) may be added later under a separate harness. Until then, keep unit tests focused and do not expand scope into those layers without an explicit project decision.
+Integration and system tests (real FFmpeg jobs, E2E) may be added later under a separate harness. Until then, keep unit tests focused and do not expand scope into those layers without an explicit project decision.

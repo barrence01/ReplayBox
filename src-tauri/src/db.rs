@@ -1,4 +1,4 @@
-use crate::models::{Recording, Session};
+use crate::models::Recording;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
@@ -141,29 +141,6 @@ pub fn list_recordings(conn: &Connection, query: Option<&str>) -> Result<Vec<Rec
         .map_err(|e| e.to_string())
 }
 
-pub fn list_session_recordings(
-    conn: &Connection,
-    session_id: &str,
-) -> Result<Vec<Recording>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, path, filename, dir, size_bytes, duration_ms, width, height,
-                    video_codec, audio_codec, is_vfr, created_at, modified_at,
-                    thumbnail_path, session_id, indexed_at
-             FROM recordings
-             WHERE session_id = ?1
-             ORDER BY COALESCE(modified_at, indexed_at) DESC",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map(params![session_id], map_recording)
-        .map_err(|e| e.to_string())?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
-}
-
 pub fn delete_recording_by_path(conn: &Connection, path: &str) -> Result<(), String> {
     let deleted = conn
         .execute("DELETE FROM recordings WHERE path = ?1", params![path])
@@ -211,46 +188,6 @@ pub fn delete_recording_by_id(conn: &Connection, id: &str) -> Result<Option<Stri
     Ok(thumb)
 }
 
-pub fn insert_session(conn: &Connection, session: &Session) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO sessions (id, started_at, ended_at, game_process) VALUES (?1,?2,?3,?4)",
-        params![
-            session.id,
-            session.started_at,
-            session.ended_at,
-            session.game_process
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn end_session(conn: &Connection, id: &str, ended_at: &str) -> Result<(), String> {
-    conn.execute(
-        "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
-        params![ended_at, id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn get_session(conn: &Connection, id: &str) -> Result<Option<Session>, String> {
-    conn.query_row(
-        "SELECT id, started_at, ended_at, game_process FROM sessions WHERE id = ?1",
-        params![id],
-        |row| {
-            Ok(Session {
-                id: row.get(0)?,
-                started_at: row.get(1)?,
-                ended_at: row.get(2)?,
-                game_process: row.get(3)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| e.to_string())
-}
-
 fn map_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
     Ok(Recording {
         id: row.get(0)?,
@@ -275,7 +212,7 @@ fn map_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Recording, Session};
+    use crate::models::Recording;
 
     fn sample_recording(id: &str, path: &str) -> Recording {
         Recording {
@@ -330,30 +267,6 @@ mod tests {
         let thumb = delete_recording_by_id(&conn, "r1").unwrap();
         assert!(thumb.is_none());
         assert!(get_recording_by_id(&conn, "r1").unwrap().is_none());
-    }
-
-    #[test]
-    fn session_insert_end_and_list_recordings() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = open_db(&dir.path().join("test.db")).unwrap();
-
-        let session = Session {
-            id: "s1".into(),
-            started_at: "2024-01-01T00:00:00Z".into(),
-            ended_at: None,
-            game_process: Some("cs2".into()),
-        };
-        insert_session(&conn, &session).unwrap();
-        end_session(&conn, "s1", "2024-01-01T01:00:00Z").unwrap();
-        let loaded = get_session(&conn, "s1").unwrap().unwrap();
-        assert_eq!(loaded.ended_at.as_deref(), Some("2024-01-01T01:00:00Z"));
-
-        let mut rec = sample_recording("r2", "/videos/game.mp4");
-        rec.session_id = Some("s1".into());
-        upsert_recording(&conn, &rec).unwrap();
-        let session_recs = list_session_recordings(&conn, "s1").unwrap();
-        assert_eq!(session_recs.len(), 1);
-        assert_eq!(session_recs[0].id, "r2");
     }
 
     #[test]

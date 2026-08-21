@@ -19,20 +19,6 @@ pub fn is_video_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Wait until size is stable so we do not index a file still being written.
-pub fn wait_until_stable(path: &Path, checks: u32, delay_ms: u64) -> bool {
-    let mut last = 0u64;
-    for _ in 0..checks {
-        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        if size > 0 && size == last {
-            return true;
-        }
-        last = size;
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-    }
-    fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false)
-}
-
 fn system_time_to_rfc3339(t: SystemTime) -> Option<String> {
     let dt: DateTime<Utc> = t.into();
     Some(dt.to_rfc3339())
@@ -58,13 +44,12 @@ fn thumb_seek_secs(probe: &ProbeInfo) -> f64 {
     }
 }
 
-/// Index or refresh a single recording; optionally attach an active session id.
+/// Index or refresh a single recording.
 pub fn index_file(
     conn: &Connection,
     settings: &Settings,
     app_data: &Path,
     path: &Path,
-    session_id: Option<&str>,
 ) -> Result<Recording, String> {
     if !path.is_file() || !is_video_file(path) {
         return Err("Not a video file".into());
@@ -122,7 +107,7 @@ pub fn index_file(
         created_at,
         modified_at,
         thumbnail_path: thumb_str,
-        session_id: session_id.map(|s| s.to_string()),
+        session_id: None,
         indexed_at: Utc::now().to_rfc3339(),
     };
 
@@ -136,7 +121,6 @@ pub fn scan_library(
     conn: &Connection,
     settings: &Settings,
     app_data: &Path,
-    session_id: Option<&str>,
 ) -> Result<usize, String> {
     let root = PathBuf::from(&settings.watch_dir);
     if !root.exists() {
@@ -148,7 +132,7 @@ pub fn scan_library(
     for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_file() && is_video_file(path) {
-            match index_file(conn, settings, app_data, path, session_id) {
+            match index_file(conn, settings, app_data, path) {
                 Ok(_) => count += 1,
                 Err(e) => eprintln!("index skipped {}: {e}", path.display()),
             }
