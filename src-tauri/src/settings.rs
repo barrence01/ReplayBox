@@ -26,7 +26,7 @@ impl Default for Settings {
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
             game_process_names: Vec::new(),
-            compress_crf: 23,
+            compress_crf: 26,
             prefer_nvenc: true,
         }
     }

@@ -1,3 +1,4 @@
+import { openPath } from "@tauri-apps/plugin-opener";
 import type { JobStatus } from "../types";
 
 interface Props {
@@ -12,6 +13,13 @@ function basename(path: string | null): string {
   return parts[parts.length - 1] || path;
 }
 
+function parentDir(path: string): string {
+  const normalized = path.replace(/[/\\]+$/, "");
+  const idx = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  if (idx <= 0) return normalized;
+  return normalized.slice(0, idx) || "/";
+}
+
 /** Fixed top bar showing active trim/compress job progress. */
 export function JobBar({ job, onCancel, onDismiss }: Props) {
   if (!job) return null;
@@ -20,7 +28,17 @@ export function JobBar({ job, onCancel, onDismiss }: Props) {
   const indeterminate = running && job.progress <= 0;
   const percent = Math.round(Math.min(Math.max(job.progress, 0), 1) * 100);
   const filename = basename(job.outputPath);
-  const finished = job.status === "done" || job.status === "error" || job.status === "cancelled";
+  const finished =
+    job.status === "done" ||
+    job.status === "error" ||
+    job.status === "cancelled";
+  const canOpenFolder = job.status === "done" && !!job.outputPath;
+  const outputPath = job.outputPath;
+
+  async function openFolder() {
+    if (!outputPath) return;
+    await openPath(parentDir(outputPath));
+  }
 
   return (
     <div className={`job-bar job-bar--${job.status}`}>
@@ -44,6 +62,11 @@ export function JobBar({ job, onCancel, onDismiss }: Props) {
               onClick={() => onCancel(job.id)}
             >
               Cancel
+            </button>
+          )}
+          {canOpenFolder && (
+            <button type="button" className="secondary" onClick={() => void openFolder()}>
+              Open folder
             </button>
           )}
           {finished && onDismiss && (

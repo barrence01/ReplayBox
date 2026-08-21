@@ -37,7 +37,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -81,13 +82,15 @@ button.linkish {
 input[type="search"],
 input[type="text"],
 input:not([type]),
-input[type="range"] {
+input[type="range"],
+select {
   width: 100%;
 }
 
 input[type="search"],
 input[type="text"],
-input:not([type]) {
+input:not([type]),
+select {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);

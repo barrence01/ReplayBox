@@ -401,6 +401,7 @@ fn run_compress(
     let input = Path::new(&recording.path);
     let crf = request.crf.unwrap_or(settings.compress_crf);
     let use_nvenc = request.use_nvenc.unwrap_or(settings.prefer_nvenc);
+    let fps = request.fps.unwrap_or(60);
     let duration_secs = recording
         .duration_ms
         .map(|ms| (ms / 1000.0).max(0.001))
@@ -413,6 +414,7 @@ fn run_compress(
         &temp,
         crf,
         use_nvenc,
+        fps,
         duration_secs,
         child_slot,
         on_progress,

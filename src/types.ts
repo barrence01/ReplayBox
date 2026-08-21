@@ -53,6 +53,7 @@ export interface CompressRequest {
   useNvenc?: boolean;
   outputMode: "copy" | "replace";
   copyCollision?: "overwrite" | "unique" | null;
+  fps?: number;
 }
 
 export interface CopyPathInfo {

@@ -44,7 +44,8 @@ export function EditorView({
   const [currentMs, setCurrentMs] = useState(0);
   const [mode, setMode] = useState<"precise" | "fast">("precise");
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
-  const [crf, setCrf] = useState(23);
+  const [crf, setCrf] = useState(26);
+  const [fps, setFps] = useState<30 | 60>(60);
   const [useNvenc, setUseNvenc] = useState(nvenc);
   const [error, setError] = useState<string | null>(null);
   const [videoSrc, setVideoSrc] = useState<string>("");
@@ -112,6 +113,7 @@ export function EditorView({
         recordingId: recording.id,
         crf,
         useNvenc,
+        fps,
         outputMode,
         copyCollision: copyCollision ?? null,
       });
@@ -306,6 +308,16 @@ export function EditorView({
               value={crf}
               onChange={(e) => setCrf(Number(e.target.value))}
             />
+          </label>
+          <label className="stack-label">
+            Output FPS
+            <select
+              value={fps}
+              onChange={(e) => setFps(Number(e.target.value) as 30 | 60)}
+            >
+              <option value={60}>60</option>
+              <option value={30}>30</option>
+            </select>
           </label>
           {nvenc && (
             <label className="check">

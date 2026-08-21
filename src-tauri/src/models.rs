@@ -55,6 +55,7 @@ pub struct CompressRequest {
     pub use_nvenc: Option<bool>,
     pub output_mode: String,
     pub copy_collision: Option<String>,
+    pub fps: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

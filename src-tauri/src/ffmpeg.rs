@@ -231,11 +231,13 @@ pub fn compress(
     output: &Path,
     crf: u8,
     use_nvenc: bool,
+    fps: u8,
     duration_secs: f64,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
     on_progress: Option<ProgressFn>,
 ) -> Result<(), String> {
     let crf_s = crf.to_string();
+    let fps_s = fps.to_string();
     let out = output.to_str().ok_or("Invalid output")?;
     let inp = input.to_str().ok_or("Invalid input")?;
 
@@ -252,6 +254,8 @@ pub fn compress(
                 &crf_s,
                 "-preset",
                 "p4",
+                "-r",
+                &fps_s,
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -279,6 +283,8 @@ pub fn compress(
                 &crf_s,
                 "-preset",
                 "medium",
+                "-r",
+                &fps_s,
                 "-c:a",
                 "aac",
                 "-b:a",
