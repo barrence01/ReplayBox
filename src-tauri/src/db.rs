@@ -165,9 +165,50 @@ pub fn list_session_recordings(
 }
 
 pub fn delete_recording_by_path(conn: &Connection, path: &str) -> Result<(), String> {
-    conn.execute("DELETE FROM recordings WHERE path = ?1", params![path])
+    let deleted = conn
+        .execute("DELETE FROM recordings WHERE path = ?1", params![path])
         .map_err(|e| e.to_string())?;
+    if deleted > 0 {
+        return Ok(());
+    }
+
+    let candidate = Path::new(path);
+    if let Ok(canonical) = candidate.canonicalize() {
+        let canon_str = canonical.to_string_lossy();
+        if canon_str != path {
+            conn.execute(
+                "DELETE FROM recordings WHERE path = ?1",
+                params![canon_str.as_ref()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    } else if let (Some(parent), Some(name)) = (candidate.parent(), candidate.file_name()) {
+        let parent_s = parent.to_string_lossy();
+        let name_s = name.to_string_lossy();
+        conn.execute(
+            "DELETE FROM recordings WHERE filename = ?1 AND dir = ?2",
+            params![name_s.as_ref(), parent_s.as_ref()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+/// Remove a recording by id and return its thumbnail path if any.
+pub fn delete_recording_by_id(conn: &Connection, id: &str) -> Result<Option<String>, String> {
+    let thumb: Option<String> = conn
+        .query_row(
+            "SELECT thumbnail_path FROM recordings WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    conn.execute("DELETE FROM recordings WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(thumb)
 }
 
 pub fn insert_session(conn: &Connection, session: &Session) -> Result<(), String> {

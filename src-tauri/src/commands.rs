@@ -1,7 +1,9 @@
 use crate::catalog;
 use crate::db;
 use crate::ffmpeg;
-use crate::models::{CompressRequest, JobStatus, Recording, Session, TrimRequest};
+use crate::models::{
+    CompressRequest, CopyPathInfo, JobStatus, Recording, Session, TrimRequest,
+};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
 use crate::watcher;
@@ -53,6 +55,48 @@ pub fn get_recording(
 ) -> Result<Option<Recording>, String> {
     let conn = state.db.lock();
     db::get_recording_by_id(&conn, &id)
+}
+
+#[tauri::command]
+pub fn recording_file_exists(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<bool, String> {
+    let conn = state.db.lock();
+    match db::get_recording_by_id(&conn, &id)? {
+        Some(rec) => Ok(Path::new(&rec.path).is_file()),
+        None => Ok(false),
+    }
+}
+
+/// Default copy destination for a recording (`trimmed` or `compressed`).
+#[tauri::command]
+pub fn resolve_copy_path(
+    state: State<'_, Arc<AppState>>,
+    recording_id: String,
+    kind: String,
+) -> Result<CopyPathInfo, String> {
+    let recording = {
+        let conn = state.db.lock();
+        db::get_recording_by_id(&conn, &recording_id)?
+            .ok_or_else(|| "Recording not found".to_string())?
+    };
+    let kind = match kind.as_str() {
+        "compressed" => "compressed",
+        _ => "trimmed",
+    };
+    let dest = ffmpeg::default_copy_dest(Path::new(&recording.path), kind);
+    let filename = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output")
+        .to_string();
+    let exists = dest.exists();
+    Ok(CopyPathInfo {
+        path: dest.to_string_lossy().to_string(),
+        filename,
+        exists,
+    })
 }
 
 #[tauri::command]
@@ -179,6 +223,14 @@ pub fn start_trim(
         ));
     }
 
+    let dest = ffmpeg::resolve_job_dest(
+        Path::new(&recording.path),
+        &request.output_mode,
+        "trimmed",
+        false,
+        request.copy_collision.as_deref(),
+    );
+
     let job_id = Uuid::new_v4().to_string();
     let job = JobStatus {
         id: job_id.clone(),
@@ -186,7 +238,7 @@ pub fn start_trim(
         status: "running".into(),
         progress: 0.0,
         message: Some(format!("Trim ({})", request.mode)),
-        output_path: None,
+        output_path: Some(dest.to_string_lossy().to_string()),
     };
     state.jobs.lock().insert(job_id.clone(), job.clone());
 
@@ -197,8 +249,16 @@ pub fn start_trim(
         .insert(job_id.clone(), child_slot.clone());
 
     let state_arc = state.inner().clone();
+    let on_progress = make_progress_emitter(app.clone(), state_arc.clone(), job_id.clone());
     thread::spawn(move || {
-        let result = run_trim(&settings, &recording, &request, Some(child_slot));
+        let result = run_trim(
+            &settings,
+            &recording,
+            &request,
+            &dest,
+            Some(child_slot),
+            Some(on_progress),
+        );
         finalize_job(&app, &state_arc, &job_id, result, &recording.path);
     });
 
@@ -230,6 +290,14 @@ pub fn start_compress(
         ));
     }
 
+    let dest = ffmpeg::resolve_job_dest(
+        Path::new(&recording.path),
+        &request.output_mode,
+        "compressed",
+        true,
+        request.copy_collision.as_deref(),
+    );
+
     let job_id = Uuid::new_v4().to_string();
     let job = JobStatus {
         id: job_id.clone(),
@@ -237,7 +305,7 @@ pub fn start_compress(
         status: "running".into(),
         progress: 0.0,
         message: Some("Compressing".into()),
-        output_path: None,
+        output_path: Some(dest.to_string_lossy().to_string()),
     };
     state.jobs.lock().insert(job_id.clone(), job.clone());
 
@@ -248,19 +316,46 @@ pub fn start_compress(
         .insert(job_id.clone(), child_slot.clone());
 
     let state_arc = state.inner().clone();
+    let on_progress = make_progress_emitter(app.clone(), state_arc.clone(), job_id.clone());
     thread::spawn(move || {
-        let result = run_compress(&settings, &recording, &request, Some(child_slot));
+        let result = run_compress(
+            &settings,
+            &recording,
+            &request,
+            &dest,
+            Some(child_slot),
+            Some(on_progress),
+        );
         finalize_job(&app, &state_arc, &job_id, result, &recording.path);
     });
 
     Ok(job)
 }
 
+fn make_progress_emitter(
+    app: AppHandle,
+    state: Arc<AppState>,
+    job_id: String,
+) -> ffmpeg::ProgressFn {
+    Arc::new(move |fraction: f64| {
+        let mut jobs = state.jobs.lock();
+        if let Some(job) = jobs.get_mut(&job_id) {
+            if job.status != "running" {
+                return;
+            }
+            job.progress = fraction;
+            let _ = app.emit("job-progress", job.clone());
+        }
+    })
+}
+
 fn run_trim(
     settings: &Settings,
     recording: &Recording,
     request: &TrimRequest,
+    dest: &Path,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
+    on_progress: Option<ffmpeg::ProgressFn>,
 ) -> Result<PathBuf, String> {
     let input = Path::new(&recording.path);
     let start = request.start_ms / 1000.0;
@@ -269,53 +364,86 @@ fn run_trim(
     let temp = ffmpeg::sibling_output(input, "tmp_edit");
     match request.mode.as_str() {
         "fast" => {
-            ffmpeg::fast_trim(&settings.ffmpeg_path, input, &temp, start, end, child_slot)?
+            ffmpeg::fast_trim(
+                &settings.ffmpeg_path,
+                input,
+                &temp,
+                start,
+                end,
+                child_slot,
+                on_progress,
+            )?
         }
         _ => {
-            ffmpeg::precise_trim(&settings.ffmpeg_path, input, &temp, start, end, child_slot)?
+            ffmpeg::precise_trim(
+                &settings.ffmpeg_path,
+                input,
+                &temp,
+                start,
+                end,
+                child_slot,
+                on_progress,
+            )?
         }
     }
 
-    finish_output(input, &temp, &request.output_mode, "trimmed")
+    finish_output(input, &temp, &request.output_mode, dest)
 }
 
 fn run_compress(
     settings: &Settings,
     recording: &Recording,
     request: &CompressRequest,
+    dest: &Path,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
+    on_progress: Option<ffmpeg::ProgressFn>,
 ) -> Result<PathBuf, String> {
     let input = Path::new(&recording.path);
     let crf = request.crf.unwrap_or(settings.compress_crf);
     let use_nvenc = request.use_nvenc.unwrap_or(settings.prefer_nvenc);
-    let temp = ffmpeg::sibling_output(input, "tmp_compress");
+    let duration_secs = recording
+        .duration_ms
+        .map(|ms| (ms / 1000.0).max(0.001))
+        .unwrap_or(1.0);
+
+    let temp = ffmpeg::sibling_output_with_ext(input, "tmp_compress", "mp4");
     ffmpeg::compress(
         &settings.ffmpeg_path,
         input,
         &temp,
         crf,
         use_nvenc,
+        duration_secs,
         child_slot,
+        on_progress,
     )?;
-    finish_output(input, &temp, &request.output_mode, "compressed")
+    finish_output(input, &temp, &request.output_mode, dest)
 }
 
 fn finish_output(
     original: &Path,
     temp: &Path,
     output_mode: &str,
-    suffix: &str,
+    dest: &Path,
 ) -> Result<PathBuf, String> {
     if output_mode == "replace" {
-        ffmpeg::atomic_replace(temp, original)?;
-        Ok(original.to_path_buf())
-    } else {
-        let dest = ffmpeg::sibling_output(original, suffix);
-        if dest.exists() {
-            std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+        if dest == original {
+            ffmpeg::atomic_replace(temp, original)?;
+            Ok(original.to_path_buf())
+        } else {
+            if dest.exists() && dest != temp {
+                std::fs::remove_file(dest).map_err(|e| e.to_string())?;
+            }
+            std::fs::rename(temp, dest).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(original);
+            Ok(dest.to_path_buf())
         }
-        std::fs::rename(temp, &dest).map_err(|e| e.to_string())?;
-        Ok(dest)
+    } else {
+        if dest.exists() {
+            std::fs::remove_file(dest).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(temp, dest).map_err(|e| e.to_string())?;
+        Ok(dest.to_path_buf())
     }
 }
 
@@ -350,6 +478,13 @@ fn finalize_job(
                     .as_ref()
                     .map(|s| s.id.clone());
                 let conn = state.db.lock();
+
+                if path.to_string_lossy() != original_path
+                    && !Path::new(original_path).exists()
+                {
+                    let _ = db::delete_recording_by_path(&conn, original_path);
+                }
+
                 let _ = catalog::index_file(
                     &conn,
                     &settings,
@@ -357,15 +492,6 @@ fn finalize_job(
                     &path,
                     session_id.as_deref(),
                 );
-                if path.to_string_lossy() == original_path {
-                    let _ = catalog::index_file(
-                        &conn,
-                        &settings,
-                        &state.app_data,
-                        Path::new(original_path),
-                        session_id.as_deref(),
-                    );
-                }
             }
             Err(e) => {
                 job.status = "error".into();

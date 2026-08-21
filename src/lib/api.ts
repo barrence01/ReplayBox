@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CompressRequest,
+  CopyPathInfo,
   JobStatus,
   Recording,
   Session,
@@ -26,6 +27,17 @@ export function listSessionRecordings(sessionId: string) {
 
 export function getRecording(id: string) {
   return invoke<Recording | null>("get_recording", { id });
+}
+
+export function recordingFileExists(id: string) {
+  return invoke<boolean>("recording_file_exists", { id });
+}
+
+export function resolveCopyPath(
+  recordingId: string,
+  kind: "trimmed" | "compressed",
+) {
+  return invoke<CopyPathInfo>("resolve_copy_path", { recordingId, kind });
 }
 
 export function getActiveSession() {

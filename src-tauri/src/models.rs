@@ -43,6 +43,8 @@ pub struct TrimRequest {
     pub mode: String,
     /// `copy` writes a new file; `replace` atomically replaces the original.
     pub output_mode: String,
+    /// When copy dest exists: `overwrite` or `unique` (numbered sibling).
+    pub copy_collision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +54,15 @@ pub struct CompressRequest {
     pub crf: Option<u8>,
     pub use_nvenc: Option<bool>,
     pub output_mode: String,
+    pub copy_collision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyPathInfo {
+    pub path: String,
+    pub filename: String,
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

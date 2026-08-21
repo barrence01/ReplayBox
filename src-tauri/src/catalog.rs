@@ -131,6 +131,7 @@ pub fn index_file(
 }
 
 /// Full recursive scan of the watch directory into SQLite.
+/// Also prunes catalog rows whose files no longer exist on disk.
 pub fn scan_library(
     conn: &Connection,
     settings: &Settings,
@@ -139,6 +140,7 @@ pub fn scan_library(
 ) -> Result<usize, String> {
     let root = PathBuf::from(&settings.watch_dir);
     if !root.exists() {
+        prune_missing(conn, app_data)?;
         return Ok(0);
     }
 
@@ -152,5 +154,24 @@ pub fn scan_library(
             }
         }
     }
+
+    prune_missing(conn, app_data)?;
     Ok(count)
+}
+
+/// Drop catalog entries whose files are gone; remove orphan thumbnails.
+fn prune_missing(conn: &Connection, app_data: &Path) -> Result<(), String> {
+    let recordings = db::list_recordings(conn, None)?;
+    for rec in recordings {
+        if Path::new(&rec.path).exists() {
+            continue;
+        }
+        let thumb = db::delete_recording_by_id(conn, &rec.id)?;
+        if let Some(thumb_path) = thumb.or(rec.thumbnail_path) {
+            let _ = fs::remove_file(&thumb_path);
+        }
+        let fallback = thumbs_dir(app_data).join(format!("{}.jpg", rec.id));
+        let _ = fs::remove_file(fallback);
+    }
+    Ok(())
 }

@@ -1,25 +1,43 @@
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import type { JobStatus, Recording } from "../types";
 import {
   formatBytes,
   formatTimestamp,
   startCompress,
   startTrim,
-  cancelJob,
   getMediaBaseUrl,
+  recordingFileExists,
+  resolveCopyPath,
 } from "../lib/api";
 import { Timeline } from "../components/Timeline";
-import { JobProgress } from "../components/JobProgress";
+import { ConflictModal } from "../components/ConflictModal";
+
+type CopyCollision = "overwrite" | "unique";
+
+interface PendingConflict {
+  kind: "trimmed" | "compressed";
+  filename: string;
+}
 
 interface Props {
   recording: Recording;
   nvenc: boolean;
+  jobRunning: boolean;
   onBack: () => void;
+  onJobStarted: (job: JobStatus) => void;
+  onMissingFile?: () => void;
 }
 
-export function EditorView({ recording, nvenc, onBack }: Props) {
+export function EditorView({
+  recording,
+  nvenc,
+  jobRunning,
+  onBack,
+  onJobStarted,
+  onMissingFile,
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const missingNotified = useRef(false);
   const durationMs = recording.durationMs ?? 0;
   const [startMs, setStartMs] = useState(0);
   const [endMs, setEndMs] = useState(durationMs || 1);
@@ -28,16 +46,17 @@ export function EditorView({ recording, nvenc, onBack }: Props) {
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
   const [crf, setCrf] = useState(23);
   const [useNvenc, setUseNvenc] = useState(nvenc);
-  const [job, setJob] = useState<JobStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [videoSrc, setVideoSrc] = useState<string>("");
+  const [conflict, setConflict] = useState<PendingConflict | null>(null);
 
   useEffect(() => {
     setStartMs(0);
     setEndMs(recording.durationMs || 1);
     setCurrentMs(0);
-    setJob(null);
     setError(null);
+    setConflict(null);
+    missingNotified.current = false;
   }, [recording.id, recording.durationMs]);
 
   useEffect(() => {
@@ -62,22 +81,43 @@ export function EditorView({ recording, nvenc, onBack }: Props) {
     };
   }, [recording.path]);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<JobStatus>("job-progress", (e) => {
-      setJob(e.payload);
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
   function seekTo(ms: number) {
     setCurrentMs(ms);
     if (videoRef.current) {
       videoRef.current.currentTime = ms / 1000;
+    }
+  }
+
+  async function beginTrim(copyCollision?: CopyCollision | null) {
+    setError(null);
+    try {
+      const status = await startTrim({
+        recordingId: recording.id,
+        startMs,
+        endMs,
+        mode,
+        outputMode,
+        copyCollision: copyCollision ?? null,
+      });
+      onJobStarted(status);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function beginCompress(copyCollision?: CopyCollision | null) {
+    setError(null);
+    try {
+      const status = await startCompress({
+        recordingId: recording.id,
+        crf,
+        useNvenc,
+        outputMode,
+        copyCollision: copyCollision ?? null,
+      });
+      onJobStarted(status);
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -88,16 +128,16 @@ export function EditorView({ recording, nvenc, onBack }: Props) {
         "Replace the original file? This cannot be undone easily.",
       );
       if (!ok) return;
+      await beginTrim(null);
+      return;
     }
     try {
-      const status = await startTrim({
-        recordingId: recording.id,
-        startMs,
-        endMs,
-        mode,
-        outputMode,
-      });
-      setJob(status);
+      const info = await resolveCopyPath(recording.id, "trimmed");
+      if (info.exists) {
+        setConflict({ kind: "trimmed", filename: info.filename });
+        return;
+      }
+      await beginTrim(null);
     } catch (e) {
       setError(String(e));
     }
@@ -110,22 +150,43 @@ export function EditorView({ recording, nvenc, onBack }: Props) {
         "Replace the original file with the compressed version?",
       );
       if (!ok) return;
+      await beginCompress(null);
+      return;
     }
     try {
-      const status = await startCompress({
-        recordingId: recording.id,
-        crf,
-        useNvenc,
-        outputMode,
-      });
-      setJob(status);
+      const info = await resolveCopyPath(recording.id, "compressed");
+      if (info.exists) {
+        setConflict({ kind: "compressed", filename: info.filename });
+        return;
+      }
+      await beginCompress(null);
     } catch (e) {
       setError(String(e));
     }
   }
 
+  async function resolveConflict(choice: CopyCollision) {
+    const pending = conflict;
+    setConflict(null);
+    if (!pending) return;
+    if (pending.kind === "trimmed") {
+      await beginTrim(choice);
+    } else {
+      await beginCompress(choice);
+    }
+  }
+
   return (
     <section className="view editor">
+      {conflict && (
+        <ConflictModal
+          filename={conflict.filename}
+          onCancel={() => setConflict(null)}
+          onCreateNew={() => void resolveConflict("unique")}
+          onReplace={() => void resolveConflict("overwrite")}
+        />
+      )}
+
       <header className="view__header">
         <div>
           <button type="button" className="linkish" onClick={onBack}>
@@ -152,6 +213,13 @@ export function EditorView({ recording, nvenc, onBack }: Props) {
               setError(
                 "Video playback failed. Check that the file exists and the media server is running.",
               );
+              if (missingNotified.current) return;
+              missingNotified.current = true;
+              void recordingFileExists(recording.id).then((exists) => {
+                if (!exists) {
+                  onMissingFile?.();
+                }
+              });
             }}
           />
           <Timeline
@@ -271,25 +339,20 @@ export function EditorView({ recording, nvenc, onBack }: Props) {
           </fieldset>
 
           <div className="editor__actions">
-            <button type="button" onClick={runTrim}>
-              Run trim
+            <button type="button" onClick={runTrim} disabled={jobRunning}>
+              {jobRunning ? "Working…" : "Run trim"}
             </button>
-            <button type="button" className="secondary" onClick={runCompress}>
-              Compress
+            <button
+              type="button"
+              className="secondary"
+              onClick={runCompress}
+              disabled={jobRunning}
+            >
+              {jobRunning ? "Working…" : "Compress"}
             </button>
           </div>
 
           {error && <p className="error">{error}</p>}
-          <JobProgress
-            job={job}
-            onCancel={async (id) => {
-              try {
-                await cancelJob(id);
-              } catch (e) {
-                setError(String(e));
-              }
-            }}
-          />
         </aside>
       </div>
     </section>

@@ -44,6 +44,7 @@ export interface TrimRequest {
   endMs: number;
   mode: "precise" | "fast";
   outputMode: "copy" | "replace";
+  copyCollision?: "overwrite" | "unique" | null;
 }
 
 export interface CompressRequest {
@@ -51,6 +52,13 @@ export interface CompressRequest {
   crf?: number;
   useNvenc?: boolean;
   outputMode: "copy" | "replace";
+  copyCollision?: "overwrite" | "unique" | null;
+}
+
+export interface CopyPathInfo {
+  path: string;
+  filename: string;
+  exists: boolean;
 }
 
 export interface JobStatus {

@@ -2,7 +2,7 @@ use crate::catalog::{self, is_video_file, wait_until_stable};
 use crate::state::AppState;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -41,7 +41,6 @@ pub fn start_watcher(app: AppHandle, state: Arc<AppState>) -> Result<(), String>
         let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
 
         loop {
-            // Collect events with a short timeout so debounce can fire.
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(event) => {
                     let relevant = matches!(
@@ -53,12 +52,7 @@ pub fn start_watcher(app: AppHandle, state: Arc<AppState>) -> Result<(), String>
                     }
                     for path in event.paths {
                         if matches!(event.kind, EventKind::Remove(_)) {
-                            let conn = state.db.lock();
-                            let _ = crate::db::delete_recording_by_path(
-                                &conn,
-                                &path.to_string_lossy(),
-                            );
-                            let _ = app.emit("catalog-updated", ());
+                            remove_from_catalog(&app, &state, &path);
                             continue;
                         }
                         if is_video_file(&path) {
@@ -80,6 +74,7 @@ pub fn start_watcher(app: AppHandle, state: Arc<AppState>) -> Result<(), String>
             for path in ready {
                 pending.remove(&path);
                 if !path.exists() {
+                    remove_from_catalog(&app, &state, &path);
                     continue;
                 }
                 if !wait_until_stable(&path, 3, 250) {
@@ -115,6 +110,15 @@ pub fn start_watcher(app: AppHandle, state: Arc<AppState>) -> Result<(), String>
     });
 
     Ok(())
+}
+
+/// Delete a recording from the catalog using the best path match available.
+fn remove_from_catalog(app: &AppHandle, state: &AppState, path: &Path) {
+    let raw = path.to_string_lossy().to_string();
+    let conn = state.db.lock();
+    let _ = crate::db::delete_recording_by_path(&conn, &raw);
+    drop(conn);
+    let _ = app.emit("catalog-updated", ());
 }
 
 /// Re-bind the watcher when the user changes `watch_dir`.

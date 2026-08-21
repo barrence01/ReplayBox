@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  cancelJob,
   checkTools,
   getRecording,
   getSettings,
@@ -11,6 +12,7 @@ import {
   updateSettings,
 } from "./lib/api";
 import type {
+  JobStatus,
   Recording,
   Session,
   SessionEndedEvent,
@@ -21,6 +23,7 @@ import { LibraryView } from "./views/LibraryView";
 import { SessionView } from "./views/SessionView";
 import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
+import { JobBar } from "./components/JobBar";
 import "./App.css";
 
 function App() {
@@ -33,6 +36,7 @@ function App() {
   const [tools, setTools] = useState({ ffmpeg: false, ffprobe: false });
   const [nvenc, setNvenc] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const [job, setJob] = useState<JobStatus | null>(null);
 
   const refreshLibrary = useCallback(async () => {
     const list = await listRecordings();
@@ -91,6 +95,10 @@ function App() {
       );
     }).then((u) => unsubs.push(u));
 
+    listen<JobStatus>("job-progress", (e) => {
+      setJob(e.payload);
+    }).then((u) => unsubs.push(u));
+
     return () => {
       unsubs.forEach((u) => u());
     };
@@ -128,6 +136,18 @@ function App() {
         </button>
       </nav>
 
+      <JobBar
+        job={job}
+        onCancel={async (id) => {
+          try {
+            await cancelJob(id);
+          } catch (e) {
+            setBanner(String(e));
+          }
+        }}
+        onDismiss={() => setJob(null)}
+      />
+
       {banner && (
         <div className="banner">
           <span>{banner}</span>
@@ -149,6 +169,7 @@ function App() {
             watchDir={settings.watchDir}
             recordings={recordings}
             onOpen={openRecording}
+            onRefresh={refreshLibrary}
             onRescan={async () => {
               await rescanLibrary();
               await refreshLibrary();
@@ -170,7 +191,22 @@ function App() {
           <EditorView
             recording={selected}
             nvenc={nvenc}
+            jobRunning={job?.status === "running"}
+            onJobStarted={setJob}
             onBack={() => setView("library")}
+            onMissingFile={async () => {
+              try {
+                await rescanLibrary();
+                await refreshLibrary();
+              } catch {
+                await refreshLibrary();
+              }
+              setSelected(null);
+              setView("library");
+              setBanner(
+                "That recording is missing on disk. The library was refreshed.",
+              );
+            }}
           />
         )}
         {view === "settings" && settings && (

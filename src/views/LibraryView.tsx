@@ -13,6 +13,7 @@ interface Props {
   recordings: Recording[];
   onOpen: (recording: Recording) => void;
   onRescan: () => Promise<void>;
+  onRefresh: () => Promise<void>;
 }
 
 export function LibraryView({
@@ -20,6 +21,7 @@ export function LibraryView({
   recordings,
   onOpen,
   onRescan,
+  onRefresh,
 }: Props) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -119,6 +121,7 @@ export function LibraryView({
                 onOpen={(f) => {
                   setSelectedFolder(f);
                   setQuery("");
+                  void onRefresh();
                 }}
               />
             ))}
