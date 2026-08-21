@@ -47,9 +47,16 @@ pub fn probe(ffprobe: &str, path: &Path) -> Result<ProbeInfo, String> {
         ));
     }
 
-    let parsed: FfprobeOutput =
-        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    probe_info_from_json_bytes(&output.stdout)
+}
 
+/// Parse ffprobe JSON into [`ProbeInfo`] without spawning a process.
+pub fn probe_info_from_json_bytes(bytes: &[u8]) -> Result<ProbeInfo, String> {
+    let parsed: FfprobeOutput = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    Ok(probe_info_from_parsed(parsed))
+}
+
+fn probe_info_from_parsed(parsed: FfprobeOutput) -> ProbeInfo {
     let mut info = ProbeInfo {
         duration_ms: None,
         width: None,
@@ -111,7 +118,7 @@ pub fn probe(ffprobe: &str, path: &Path) -> Result<ProbeInfo, String> {
         }
     }
 
-    Ok(info)
+    info
 }
 
 /// Extract a single-frame thumbnail at a timestamp (seconds), not a frame index.
@@ -516,5 +523,120 @@ pub fn atomic_replace(temp: &Path, original: &Path) -> Result<(), String> {
             }
             Err(e.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn parse_ffmpeg_time_secs_reads_timestamp() {
+        assert_eq!(
+            parse_ffmpeg_time_secs("frame=1 time=01:02:03.50 bitrate=N/A"),
+            Some(3723.5)
+        );
+        assert_eq!(parse_ffmpeg_time_secs("time=N/A"), None);
+        assert_eq!(parse_ffmpeg_time_secs("no time here"), None);
+    }
+
+    #[test]
+    fn sibling_and_default_copy_dest() {
+        let input = Path::new("/tmp/clip.mkv");
+        assert_eq!(
+            sibling_output_with_ext(input, "trimmed", "mp4"),
+            PathBuf::from("/tmp/clip_trimmed.mp4")
+        );
+        assert_eq!(
+            default_copy_dest(input, "compressed"),
+            PathBuf::from("/tmp/clip_compressed.mp4")
+        );
+        assert_eq!(
+            default_copy_dest(input, "trimmed"),
+            PathBuf::from("/tmp/clip_trimmed.mp4")
+        );
+    }
+
+    #[test]
+    fn is_mp4_container_and_stem_with_mp4() {
+        assert!(is_mp4_container(Path::new("a.mp4")));
+        assert!(is_mp4_container(Path::new("a.M4V")));
+        assert!(!is_mp4_container(Path::new("a.mkv")));
+        assert_eq!(
+            stem_with_mp4(Path::new("/videos/clip.mkv")),
+            PathBuf::from("/videos/clip.mp4")
+        );
+    }
+
+    #[test]
+    fn resolve_job_dest_modes() {
+        let original = Path::new("/videos/clip.mkv");
+        assert_eq!(
+            resolve_job_dest(original, "replace", "trimmed", true, None),
+            PathBuf::from("/videos/clip.mp4")
+        );
+        assert_eq!(
+            resolve_job_dest(original, "copy", "trimmed", false, None),
+            PathBuf::from("/videos/clip_trimmed.mp4")
+        );
+    }
+
+    #[test]
+    fn next_unique_sibling_skips_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("out.mp4");
+        fs::write(&base, b"a").unwrap();
+        let second = dir.path().join("out_2.mp4");
+        fs::write(&second, b"b").unwrap();
+        assert_eq!(
+            next_unique_sibling(&base),
+            dir.path().join("out_3.mp4")
+        );
+    }
+
+    #[test]
+    fn atomic_replace_swaps_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("clip.mp4");
+        let temp = dir.path().join("clip.tmp.mp4");
+        fs::write(&original, b"old").unwrap();
+        fs::write(&temp, b"new").unwrap();
+        atomic_replace(&temp, &original).unwrap();
+        assert_eq!(fs::read(&original).unwrap(), b"new");
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn probe_info_from_json_parses_streams_and_vfr() {
+        let json = br#"{
+            "format": { "duration": "12.5" },
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                    "avg_frame_rate": "30/1",
+                    "r_frame_rate": "60/1"
+                },
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac"
+                }
+            ]
+        }"#;
+        let info = probe_info_from_json_bytes(json).unwrap();
+        assert_eq!(info.duration_ms, Some(12_500.0));
+        assert_eq!(info.width, Some(1920));
+        assert_eq!(info.height, Some(1080));
+        assert_eq!(info.video_codec.as_deref(), Some("h264"));
+        assert_eq!(info.audio_codec.as_deref(), Some("aac"));
+        assert!(info.is_vfr);
+    }
+
+    #[test]
+    fn probe_info_from_json_rejects_invalid() {
+        assert!(probe_info_from_json_bytes(b"not-json").is_err());
     }
 }

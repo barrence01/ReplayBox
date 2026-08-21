@@ -271,3 +271,99 @@ fn map_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
         indexed_at: row.get(15)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Recording, Session};
+
+    fn sample_recording(id: &str, path: &str) -> Recording {
+        Recording {
+            id: id.to_string(),
+            path: path.to_string(),
+            filename: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            dir: Path::new(path)
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            size_bytes: Some(100),
+            duration_ms: Some(1500.0),
+            width: Some(1280),
+            height: Some(720),
+            video_codec: Some("h264".into()),
+            audio_codec: Some("aac".into()),
+            is_vfr: false,
+            created_at: Some("2024-01-01T00:00:00Z".into()),
+            modified_at: Some("2024-01-02T00:00:00Z".into()),
+            thumbnail_path: None,
+            session_id: None,
+            indexed_at: "2024-01-03T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn open_db_upsert_get_list_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_file = dir.path().join("test.db");
+        let conn = open_db(&db_file).unwrap();
+
+        let rec = sample_recording("r1", "/videos/clip.mp4");
+        upsert_recording(&conn, &rec).unwrap();
+
+        let by_id = get_recording_by_id(&conn, "r1").unwrap().unwrap();
+        assert_eq!(by_id.filename, "clip.mp4");
+        assert_eq!(by_id.duration_ms, Some(1500.0));
+
+        let by_path = get_recording_by_path(&conn, "/videos/clip.mp4")
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_path.id, "r1");
+
+        let listed = list_recordings(&conn, Some("clip")).unwrap();
+        assert_eq!(listed.len(), 1);
+
+        let thumb = delete_recording_by_id(&conn, "r1").unwrap();
+        assert!(thumb.is_none());
+        assert!(get_recording_by_id(&conn, "r1").unwrap().is_none());
+    }
+
+    #[test]
+    fn session_insert_end_and_list_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("test.db")).unwrap();
+
+        let session = Session {
+            id: "s1".into(),
+            started_at: "2024-01-01T00:00:00Z".into(),
+            ended_at: None,
+            game_process: Some("cs2".into()),
+        };
+        insert_session(&conn, &session).unwrap();
+        end_session(&conn, "s1", "2024-01-01T01:00:00Z").unwrap();
+        let loaded = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(loaded.ended_at.as_deref(), Some("2024-01-01T01:00:00Z"));
+
+        let mut rec = sample_recording("r2", "/videos/game.mp4");
+        rec.session_id = Some("s1".into());
+        upsert_recording(&conn, &rec).unwrap();
+        let session_recs = list_session_recordings(&conn, "s1").unwrap();
+        assert_eq!(session_recs.len(), 1);
+        assert_eq!(session_recs[0].id, "r2");
+    }
+
+    #[test]
+    fn delete_recording_by_path_removes_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("test.db")).unwrap();
+        upsert_recording(&conn, &sample_recording("r3", "/videos/gone.mp4")).unwrap();
+        delete_recording_by_path(&conn, "/videos/gone.mp4").unwrap();
+        assert!(get_recording_by_path(&conn, "/videos/gone.mp4")
+            .unwrap()
+            .is_none());
+    }
+}

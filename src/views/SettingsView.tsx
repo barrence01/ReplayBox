@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { BackgroundServiceStatus, Settings } from "../types";
-import { backgroundServiceStatus, resolvedToolPaths } from "../lib/api";
+import {
+  backgroundServiceStatus,
+  checkWatchDir,
+  resolvedToolPaths,
+} from "../lib/api";
 
 interface Props {
   settings: Settings;
@@ -14,6 +18,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   const [processInput, setProcessInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageIsError, setMessageIsError] = useState(false);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
   const [serviceStatus, setServiceStatus] =
     useState<BackgroundServiceStatus | null>(null);
@@ -40,8 +45,17 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       multiple: false,
       title: "Select recordings folder",
     });
-    if (typeof selected === "string") {
+    if (typeof selected !== "string") {
+      return;
+    }
+    try {
+      await checkWatchDir(selected);
       setDraft((d) => ({ ...d, watchDir: selected }));
+      setMessage(null);
+      setMessageIsError(false);
+    } catch (e) {
+      setMessage(String(e));
+      setMessageIsError(true);
     }
   }
 
@@ -64,6 +78,29 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       ...d,
       gameProcessNames: d.gameProcessNames.filter((n) => n !== name),
     }));
+  }
+
+  async function handleSave() {
+    if (!draft.watchDir.trim()) {
+      setMessage("Watch folder path is empty.");
+      setMessageIsError(true);
+      return;
+    }
+
+    setSaving(true);
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      await checkWatchDir(draft.watchDir);
+      await onSave(draft);
+      setMessage("Settings saved.");
+      setMessageIsError(false);
+    } catch (e) {
+      setMessage(String(e));
+      setMessageIsError(true);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -221,25 +258,12 @@ export function SettingsView({ settings, tools, onSave }: Props) {
           )}
         </div>
 
-        <button
-          type="button"
-          disabled={saving}
-          onClick={async () => {
-            setSaving(true);
-            setMessage(null);
-            try {
-              await onSave(draft);
-              setMessage("Settings saved.");
-            } catch (e) {
-              setMessage(String(e));
-            } finally {
-              setSaving(false);
-            }
-          }}
-        >
+        <button type="button" disabled={saving} onClick={handleSave}>
           {saving ? "Saving…" : "Save settings"}
         </button>
-        {message && <p className="hint">{message}</p>}
+        {message && (
+          <p className={messageIsError ? "error" : "hint"}>{message}</p>
+        )}
       </div>
     </section>
   );

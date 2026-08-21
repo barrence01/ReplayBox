@@ -100,6 +100,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
+            commands::check_watch_dir,
             commands::update_settings,
             commands::list_recordings,
             commands::list_session_recordings,

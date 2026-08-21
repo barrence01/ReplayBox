@@ -70,3 +70,51 @@ pub fn discover_resource_dir(app_resource_dir: Option<PathBuf>) -> Option<PathBu
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    #[test]
+    fn resolve_tool_path_uses_existing_configured_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("custom-ffmpeg");
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o755)
+            .open(&bin)
+            .unwrap();
+        let resolved = resolve_tool_path(
+            bin.to_str().unwrap(),
+            None,
+            "ffmpeg",
+            "ffmpeg",
+        );
+        assert_eq!(resolved, bin.to_str().unwrap());
+    }
+
+    #[test]
+    fn resolve_tool_path_prefers_bundled_resource() {
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg_dir = dir.path().join("ffmpeg");
+        fs::create_dir_all(&ffmpeg_dir).unwrap();
+        let bundled = ffmpeg_dir.join("ffmpeg");
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o755)
+            .open(&bundled)
+            .unwrap();
+        let resolved = resolve_tool_path("", Some(dir.path()), "ffmpeg", "ffmpeg");
+        assert_eq!(resolved, bundled.to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_tool_path_falls_back_to_path_name() {
+        let resolved = resolve_tool_path("", None, "ffmpeg", "ffmpeg");
+        assert_eq!(resolved, "ffmpeg");
+    }
+}

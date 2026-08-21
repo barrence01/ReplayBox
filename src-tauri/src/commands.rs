@@ -20,12 +20,19 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
     state.settings.lock().clone()
 }
 
+/// Check that a path is a readable directory without mutating settings.
+#[tauri::command]
+pub fn check_watch_dir(path: String) -> Result<(), String> {
+    settings::validate_watch_dir(&path)
+}
+
 #[tauri::command]
 pub fn update_settings(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: Settings,
 ) -> Result<Settings, String> {
+    settings::validate_watch_dir(&settings.watch_dir)?;
     let path = settings::settings_path(&state.app_data);
     settings.save(&path)?;
     let enabled = settings.background_service_enabled;

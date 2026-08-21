@@ -175,3 +175,24 @@ fn prune_missing(conn: &Connection, app_data: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn is_video_file_recognizes_supported_extensions() {
+        for ext in ["mp4", "MKV", "WebM", "mov", "avi", "m4v", "ts"] {
+            let path = PathBuf::from(format!("clip.{ext}"));
+            assert!(is_video_file(&path), "expected {ext} to be video");
+        }
+    }
+
+    #[test]
+    fn is_video_file_rejects_non_video() {
+        assert!(!is_video_file(Path::new("notes.txt")));
+        assert!(!is_video_file(Path::new("clip")));
+        assert!(!is_video_file(Path::new("photo.jpg")));
+    }
+}
