@@ -1,4 +1,4 @@
-import { openPath } from "@tauri-apps/plugin-opener";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { JobStatus } from "../types";
 
 interface Props {
@@ -11,13 +11,6 @@ function basename(path: string | null): string {
   if (!path) return "…";
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] || path;
-}
-
-function parentDir(path: string): string {
-  const normalized = path.replace(/[/\\]+$/, "");
-  const idx = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
-  if (idx <= 0) return normalized;
-  return normalized.slice(0, idx) || "/";
 }
 
 /** Fixed top bar showing active trim/compress job progress. */
@@ -37,7 +30,11 @@ export function JobBar({ job, onCancel, onDismiss }: Props) {
 
   async function openFolder() {
     if (!outputPath) return;
-    await openPath(parentDir(outputPath));
+    try {
+      await revealItemInDir(outputPath);
+    } catch (e) {
+      console.error("Failed to open folder:", e);
+    }
   }
 
   return (
@@ -65,7 +62,11 @@ export function JobBar({ job, onCancel, onDismiss }: Props) {
             </button>
           )}
           {canOpenFolder && (
-            <button type="button" className="secondary" onClick={() => void openFolder()}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void openFolder()}
+            >
               Open folder
             </button>
           )}

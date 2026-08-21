@@ -271,7 +271,15 @@ select {
 .main {
   grid-column: 2;
   overflow: auto;
-  padding: 1.25rem 1.5rem 2rem;
+  padding: 0 1.5rem 2rem;
+}
+
+.view {
+  padding-top: 1.25rem;
+}
+
+.view.editor {
+  padding-top: 0;
 }
 
 .view__header {
@@ -430,6 +438,20 @@ select {
   gap: 1.25rem;
 }
 
+.editor__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -1.5rem 0.85rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor__toolbar .linkish {
+  margin-bottom: 0;
+}
+
 .editor__player video {
   width: 100%;
   max-height: 52vh;
@@ -499,14 +521,53 @@ select {
 
 .editor__actions {
   display: flex;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.6rem;
   margin-top: 1rem;
 }
 
-.editor__actions button:first-child {
+.editor__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 8.5rem;
+  justify-content: center;
   background: var(--accent);
   border-color: var(--accent);
   color: #041018;
+}
+
+.editor__action--secondary {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.editor__action svg {
+  flex-shrink: 0;
+}
+
+.editor__output {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(7rem, 9rem);
+  gap: 1rem;
+  align-items: start;
+  margin-top: 1rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.editor__output-legend {
+  padding: 0;
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.editor__fps {
+  margin-bottom: 0;
 }
 
 .path {
@@ -659,6 +720,10 @@ select {
   }
 
   .editor__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .editor__output {
     grid-template-columns: 1fr;
   }
 }

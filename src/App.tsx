@@ -7,7 +7,6 @@ import {
   getSettings,
   listRecordings,
   listSessionRecordings,
-  nvencAvailable,
   rescanLibrary,
   updateSettings,
 } from "./lib/api";
@@ -34,7 +33,6 @@ function App() {
   const [selected, setSelected] = useState<Recording | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [tools, setTools] = useState({ ffmpeg: false, ffprobe: false });
-  const [nvenc, setNvenc] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
 
@@ -51,14 +49,9 @@ function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [s, t, n] = await Promise.all([
-          getSettings(),
-          checkTools(),
-          nvencAvailable(),
-        ]);
+        const [s, t] = await Promise.all([getSettings(), checkTools()]);
         setSettings(s);
         setTools({ ffmpeg: t[0], ffprobe: t[1] });
-        setNvenc(n);
         await refreshLibrary();
       } catch (e) {
         setBanner(String(e));
@@ -190,7 +183,7 @@ function App() {
         {view === "editor" && selected && (
           <EditorView
             recording={selected}
-            nvenc={nvenc}
+            preferNvenc={settings?.preferNvenc ?? true}
             jobRunning={job?.status === "running"}
             onJobStarted={setJob}
             onBack={() => setView("library")}
@@ -218,7 +211,6 @@ function App() {
               setSettings(saved);
               const t = await checkTools();
               setTools({ ffmpeg: t[0], ffprobe: t[1] });
-              setNvenc(await nvencAvailable());
             }}
           />
         )}

@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import { Timeline } from "../components/Timeline";
 import { ConflictModal } from "../components/ConflictModal";
+import { CompressIcon, ScissorsIcon } from "../components/icons";
 
 type CopyCollision = "overwrite" | "unique";
 
@@ -21,7 +22,7 @@ interface PendingConflict {
 
 interface Props {
   recording: Recording;
-  nvenc: boolean;
+  preferNvenc: boolean;
   jobRunning: boolean;
   onBack: () => void;
   onJobStarted: (job: JobStatus) => void;
@@ -30,7 +31,7 @@ interface Props {
 
 export function EditorView({
   recording,
-  nvenc,
+  preferNvenc,
   jobRunning,
   onBack,
   onJobStarted,
@@ -46,7 +47,6 @@ export function EditorView({
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
   const [crf, setCrf] = useState(26);
   const [fps, setFps] = useState<30 | 60>(60);
-  const [useNvenc, setUseNvenc] = useState(nvenc);
   const [error, setError] = useState<string | null>(null);
   const [videoSrc, setVideoSrc] = useState<string>("");
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
@@ -112,7 +112,7 @@ export function EditorView({
       const status = await startCompress({
         recordingId: recording.id,
         crf,
-        useNvenc,
+        useNvenc: preferNvenc,
         fps,
         outputMode,
         copyCollision: copyCollision ?? null,
@@ -189,11 +189,14 @@ export function EditorView({
         />
       )}
 
+      <div className="editor__toolbar">
+        <button type="button" className="linkish" onClick={onBack}>
+          ← Back
+        </button>
+      </div>
+
       <header className="view__header">
         <div>
-          <button type="button" className="linkish" onClick={onBack}>
-            ← Back
-          </button>
           <h1>{recording.filename}</h1>
           <p className="muted path">{recording.path}</p>
         </div>
@@ -236,6 +239,61 @@ export function EditorView({
             onEndChange={setEndMs}
             onSeek={seekTo}
           />
+
+          <div className="editor__actions">
+            <button
+              type="button"
+              className="editor__action"
+              onClick={runTrim}
+              disabled={jobRunning}
+            >
+              <ScissorsIcon />
+              <span>{jobRunning ? "Working…" : "Trim"}</span>
+            </button>
+            <button
+              type="button"
+              className="editor__action editor__action--secondary"
+              onClick={runCompress}
+              disabled={jobRunning}
+            >
+              <CompressIcon />
+              <span>{jobRunning ? "Working…" : "Compress"}</span>
+            </button>
+          </div>
+
+          <div className="editor__output">
+            <fieldset className="radio-group">
+              <legend className="editor__output-legend">Output</legend>
+              <label>
+                <input
+                  type="radio"
+                  checked={outputMode === "copy"}
+                  onChange={() => setOutputMode("copy")}
+                />
+                Create a copy
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={outputMode === "replace"}
+                  onChange={() => setOutputMode("replace")}
+                />
+                Replace original
+              </label>
+            </fieldset>
+            <label className="stack-label editor__fps">
+              Output FPS
+              <select
+                value={fps}
+                onChange={(e) => setFps(Number(e.target.value) as 30 | 60)}
+              >
+                <option value={60}>60</option>
+                <option value={30}>30</option>
+              </select>
+            </label>
+          </div>
+
+          {error && <p className="error">{error}</p>}
         </div>
 
         <aside className="editor__side">
@@ -309,62 +367,6 @@ export function EditorView({
               onChange={(e) => setCrf(Number(e.target.value))}
             />
           </label>
-          <label className="stack-label">
-            Output FPS
-            <select
-              value={fps}
-              onChange={(e) => setFps(Number(e.target.value) as 30 | 60)}
-            >
-              <option value={60}>60</option>
-              <option value={30}>30</option>
-            </select>
-          </label>
-          {nvenc && (
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={useNvenc}
-                onChange={(e) => setUseNvenc(e.target.checked)}
-              />
-              Use NVENC when available
-            </label>
-          )}
-
-          <h2>Output</h2>
-          <fieldset className="radio-group">
-            <label>
-              <input
-                type="radio"
-                checked={outputMode === "copy"}
-                onChange={() => setOutputMode("copy")}
-              />
-              Create a copy
-            </label>
-            <label>
-              <input
-                type="radio"
-                checked={outputMode === "replace"}
-                onChange={() => setOutputMode("replace")}
-              />
-              Replace original
-            </label>
-          </fieldset>
-
-          <div className="editor__actions">
-            <button type="button" onClick={runTrim} disabled={jobRunning}>
-              {jobRunning ? "Working…" : "Run trim"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={runCompress}
-              disabled={jobRunning}
-            >
-              {jobRunning ? "Working…" : "Compress"}
-            </button>
-          </div>
-
-          {error && <p className="error">{error}</p>}
         </aside>
       </div>
     </section>
