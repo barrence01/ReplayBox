@@ -1,5 +1,7 @@
 # Building ReplayBox
 
+Build instructions for ReplayBox — see the [README](../README.md) for the project overview.
+
 This guide covers a full production build: host packages, downloads, bundled FFmpeg, and the Tauri app.
 
 ## Quick start
