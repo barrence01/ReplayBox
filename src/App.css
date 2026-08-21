@@ -436,6 +436,7 @@ select {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.9fr);
   gap: 1.25rem;
+  align-items: start;
 }
 
 .editor__toolbar {

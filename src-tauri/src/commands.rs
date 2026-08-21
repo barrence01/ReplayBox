@@ -227,7 +227,7 @@ pub fn start_trim(
         Path::new(&recording.path),
         &request.output_mode,
         "trimmed",
-        false,
+        true,
         request.copy_collision.as_deref(),
     );
 
@@ -361,7 +361,7 @@ fn run_trim(
     let start = request.start_ms / 1000.0;
     let end = request.end_ms / 1000.0;
 
-    let temp = ffmpeg::sibling_output(input, "tmp_edit");
+    let temp = ffmpeg::sibling_output_with_ext(input, "tmp_edit", "mp4");
     match request.mode.as_str() {
         "fast" => {
             ffmpeg::fast_trim(

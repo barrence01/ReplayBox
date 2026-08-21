@@ -150,7 +150,7 @@ pub fn generate_thumbnail(
     Ok(())
 }
 
-/// Precise trim: re-encode with time-based trim filters; preserves VFR (no -r).
+/// Precise trim: re-encode to H.264/AAC MP4; preserves VFR (no -r).
 pub fn precise_trim(
     ffmpeg: &str,
     input: &Path,
@@ -182,6 +182,10 @@ pub fn precise_trim(
             "medium",
             "-c:a",
             "aac",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
             output.to_str().ok_or("Invalid output")?,
         ],
         child_slot,
@@ -190,7 +194,7 @@ pub fn precise_trim(
     )
 }
 
-/// Fast trim via stream copy. May cut on keyframes — not frame-accurate.
+/// Fast trim via stream copy into MP4. May cut on keyframes — not frame-accurate.
 pub fn fast_trim(
     ffmpeg: &str,
     input: &Path,
@@ -216,6 +220,10 @@ pub fn fast_trim(
             input.to_str().ok_or("Invalid input")?,
             "-c",
             "copy",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
             output.to_str().ok_or("Invalid output")?,
         ],
         child_slot,
@@ -398,15 +406,6 @@ fn parse_ffmpeg_time_secs(line: &str) -> Option<f64> {
     Some(hours * 3600.0 + mins * 60.0 + secs)
 }
 
-/// Build a sibling output path using the source extension (e.g. clip_trimmed.mkv).
-pub fn sibling_output(input: &Path, suffix: &str) -> PathBuf {
-    let ext = input
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("mp4");
-    sibling_output_with_ext(input, suffix, ext)
-}
-
 /// Build a sibling output path with an explicit extension.
 pub fn sibling_output_with_ext(input: &Path, suffix: &str, ext: &str) -> PathBuf {
     let stem = input
@@ -419,11 +418,11 @@ pub fn sibling_output_with_ext(input: &Path, suffix: &str, ext: &str) -> PathBuf
         .join(format!("{stem}_{suffix}.{ext}"))
 }
 
-/// Default copy destination for trim (`trimmed`) or compress (`compressed` → mp4).
+/// Default copy destination for trim/compress (always MP4 for browser preview).
 pub fn default_copy_dest(input: &Path, kind: &str) -> PathBuf {
     match kind {
         "compressed" => sibling_output_with_ext(input, "compressed", "mp4"),
-        _ => sibling_output(input, "trimmed"),
+        _ => sibling_output_with_ext(input, "trimmed", "mp4"),
     }
 }
 
