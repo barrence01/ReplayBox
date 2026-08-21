@@ -202,9 +202,11 @@ export function SettingsView({ settings, tools, onSave }: Props) {
           <p className="hint">
             When enabled, indexing and game sessions continue via{" "}
             <code>replayboxd</code> (systemd user unit) while the app is
-            closed. Requires a built <code>replayboxd</code> binary. Save
-            settings to apply. For the service without a logged-in session,
-            see <code>loginctl enable-linger</code>.
+            closed. The daemon is installed under your app data directory so
+            the unit stays valid for AppImage installs. Use{" "}
+            <code>npm run tauri:dev</code> or <code>npm run stage:daemon</code>{" "}
+            so the binary exists, then Save settings to apply. For the service
+            without a logged-in session, see <code>loginctl enable-linger</code>.
           </p>
           {serviceStatus && (
             <p

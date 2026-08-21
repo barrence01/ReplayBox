@@ -63,7 +63,10 @@ pub fn run() {
             let state = handle.state::<Arc<AppState>>().inner().clone();
 
             if background_enabled {
-                if let Err(e) = background_service::enable_service() {
+                if let Err(e) = background_service::refresh_installed_daemon(&state.app_data) {
+                    eprintln!("background daemon refresh: {e}");
+                }
+                if let Err(e) = background_service::enable_service(&state.app_data) {
                     eprintln!("background service enable failed: {e}");
                 }
             } else if let Err(e) = background_service::start_in_app(&handle, &state) {

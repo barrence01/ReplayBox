@@ -8,10 +8,13 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "prepare:ffmpeg": "bash scripts/build-ffmpeg.sh",
+    "build:daemon": "cargo build --manifest-path src-tauri/Cargo.toml --bin replayboxd",
+    "stage:daemon": "bash scripts/stage-daemon.sh",
+    "stage:daemon:release": "bash scripts/stage-daemon.sh release",
     "build:all": "bash scripts/build-all.sh",
     "tauri": "tauri",
-    "tauri:dev": "npm run prepare:ffmpeg && tauri dev",
-    "tauri:build": "npm run prepare:ffmpeg && tauri build"
+    "tauri:dev": "npm run prepare:ffmpeg && npm run stage:daemon && tauri dev",
+    "tauri:build": "npm run prepare:ffmpeg && npm run stage:daemon:release && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

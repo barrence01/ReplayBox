@@ -32,6 +32,7 @@ src-tauri/gen/schemas
 .cache/
 src-tauri/resources/ffmpeg/ffmpeg
 src-tauri/resources/ffmpeg/ffprobe
+src-tauri/binaries/replayboxd-*
 
 # Env
 .env

@@ -31,46 +31,35 @@ ReplayBox helps you turn long game recordings into shareable clips — watch you
 
 ## Build
 
-Host packages, FFmpeg bundling, and troubleshooting: **[docs/BUILD.md](docs/BUILD.md)**.
+Host packages, FFmpeg bundling, daemon staging, and troubleshooting: **[docs/BUILD.md](docs/BUILD.md)**.
 
 ```bash
-# Install JS deps
 npm install
-
-# Development (UI + hot reload; prepares bundled FFmpeg first)
-npm run tauri:dev
-
-# Full production build
-./scripts/build-all.sh
-# or: npm run build:all
+npm run tauri:dev      # FFmpeg + stage replayboxd + hot reload
+npm run build:all      # full production build (or ./scripts/build-all.sh)
 ```
-
-The Rust crate ships two binaries:
 
 | Binary | Role |
 |--------|------|
-| `replaybox` | Tauri desktop app (default for `cargo run`) |
-| `replayboxd` | Background daemon (folder watcher + game sessions) |
+| `replaybox` | Desktop app (`default-run` for `cargo run`) |
+| `replayboxd` | Background daemon (watch folder + game sessions) |
 
 ```bash
-cd src-tauri
-
-# Desktop app
-cargo run --bin replaybox
-# or: cargo run   # default-run is replaybox
-
-# Background daemon (needed before enabling the Settings toggle)
-cargo build --bin replayboxd
-cargo run --bin replayboxd
+npm run build:daemon          # build daemon only
+npm run stage:daemon          # debug → src-tauri/binaries/replayboxd-<triple>
+npm run stage:daemon:release  # release sidecar for production bundles
 ```
+
+Enabling **Run background service** copies the daemon to  
+`~/.local/share/com.williambarrence.replaybox/bin/replayboxd` and points the systemd user unit at that path (AppImage-safe).
 
 ## First run
 
-1. Open **Settings** and confirm the **watch folder** (where your recordings live).
+1. Open **Settings** and confirm the **watch folder**.
 2. Add **game process names** (matched against `/proc`, e.g. `cs2`).
-3. (Optional) Enable **Run background service** so indexing and sessions continue while ReplayBox is closed. Build `replayboxd` first (see Build above); Save settings installs/enables the user systemd unit. If you need the service without a graphical login session, see `loginctl enable-linger`.
-4. Play a game — when it closes, use **Session** to review new clips.
-5. Open a clip to trim or compress, then **create a copy** (or replace the original).
+3. (Optional) Enable **Run background service**, then Save — indexing/sessions continue with the UI closed. Prefer `npm run tauri:dev` so the sidecar exists. For the service without a graphical login, see `loginctl enable-linger`.
+4. Play a game — when it closes, use **Session** to review clips.
+5. Open a clip to trim or compress (**create a copy** or replace the original).
 
 ## Stack
 

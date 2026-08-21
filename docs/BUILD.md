@@ -2,13 +2,13 @@
 
 Build instructions for ReplayBox — see the [README](../README.md) for the project overview.
 
-This guide covers a full production build: host packages, downloads, bundled FFmpeg, and the Tauri app.
+This guide covers a full production build: host packages, downloads, bundled FFmpeg, the `replayboxd` sidecar, and the Tauri app.
 
 ## Quick start
 
 ```bash
 # From the repository root
-chmod +x scripts/build-all.sh   # once
+chmod +x scripts/build-all.sh scripts/stage-daemon.sh   # once
 ./scripts/build-all.sh
 ```
 
@@ -18,38 +18,67 @@ Or via npm:
 npm run build:all
 ```
 
-For day-to-day development (bundled FFmpeg + hot reload):
+For day-to-day development:
 
 ```bash
 npm run tauri:dev
 ```
 
+That command:
+
+1. Prepares bundled FFmpeg (`prepare:ffmpeg`)
+2. Stages `replayboxd` as a Tauri `externalBin` sidecar (`stage:daemon`)
+3. Starts the Tauri + Vite dev app
+
 ## Binaries
 
-The `src-tauri` crate defines two binaries. `Cargo.toml` sets `default-run = "replaybox"`, so plain `cargo run` launches the desktop app.
+The `src-tauri` crate defines two binaries. `Cargo.toml` sets `default-run = "replaybox"`.
 
 | Binary | Path | Purpose |
 |--------|------|---------|
 | `replaybox` | `src/main.rs` | Tauri UI |
-| `replayboxd` | `src/bin/replayboxd.rs` | systemd-friendly daemon (watch folder + game process sessions) |
+| `replayboxd` | `src/bin/replayboxd.rs` | Background daemon (watch folder + game process sessions) |
 
 ```bash
+# From the repository root (preferred)
+npm run build:daemon
+npm run stage:daemon           # debug → src-tauri/binaries/replayboxd-<host-triple>
+npm run stage:daemon:release   # release (used by tauri:build / build-all)
+
 cd src-tauri
-
 cargo run --bin replaybox
-cargo run                  # same as --bin replaybox
-
-cargo build --bin replayboxd
+cargo run                      # same as --bin replaybox
 cargo run --bin replayboxd
 ```
 
-Without `--bin` or `default-run`, Cargo errors with *could not determine which binary to run* when both exist.
+Do **not** run bare `cargo build` / `cargo run` from the repo root — `Cargo.toml` lives under `src-tauri/`. Use the npm scripts or `--manifest-path src-tauri/Cargo.toml`.
+
+`stage:daemon` creates a placeholder under `src-tauri/binaries/` if needed so Tauri’s build script accepts `externalBin`, then builds and overwrites with the real binary. Staged `binaries/replayboxd-*` files are gitignored (`.gitkeep` remains).
+
+Without `--bin` or `default-run`, Cargo errors with *could not determine which binary to run* when both binaries exist.
 
 ### Background service (`replayboxd`)
 
-1. Build the daemon: `cargo build --bin replayboxd` (from `src-tauri`).
-2. In the app: Settings → **Run background service** → Save.
-3. The app writes `~/.config/systemd/user/replayboxd.service` with `ExecStart` pointing at the resolved `replayboxd` path (beside the app binary, or under `target/debug` / `target/release`), then runs `systemctl --user enable --now replayboxd`.
+Flow:
+
+1. `npm run tauri:dev` or `npm run stage:daemon` so a source binary exists (sidecar beside the app, `target/…/replayboxd`, or `binaries/replayboxd-*`).
+2. Settings → **Run background service** → Save.
+3. The app **copies** the daemon to:
+
+   `~/.local/share/com.williambarrence.replaybox/bin/replayboxd`
+
+4. It writes `~/.config/systemd/user/replayboxd.service` with `ExecStart=` set to that installed path, then runs `systemctl --user enable --now replayboxd`.
+
+**AppImage note:** never point systemd at a path inside an AppImage mount (`/tmp/.mount_*`). Those disappear when the AppImage is not running. Install-to-app-data is what keeps the service valid for future AppImage bundles.
+
+On startup with the service enabled, ReplayBox refreshes the installed binary if the source is newer and restarts the unit when needed.
+
+Useful checks:
+
+```bash
+systemctl --user status replayboxd
+systemctl --user cat replayboxd    # ExecStart should be under ~/.local/share/.../bin/
+```
 
 If you need the user service without an active graphical login session, see `loginctl enable-linger`.
 
@@ -57,8 +86,9 @@ If you need the user service without an active graphical login session, see `log
 
 1. Verifies host tools (`node`, `npm`, `cargo`, `rustc`, `git`, `make`, `pkg-config`, **`nasm`**, **libx264**)
 2. Runs `npm install`
-3. Runs `npm run prepare:ffmpeg` (build or cache-hit copy of FFmpeg/FFprobe)
-4. Runs `npm run tauri:build` (frontend + Rust + app bundle)
+3. Runs `npm run prepare:ffmpeg`
+4. Stages release `replayboxd` for `externalBin` (`stage:daemon:release`)
+5. Runs `npm run tauri:build` (frontend + Rust + app bundle; stages daemon again via `beforeBuildCommand`)
 
 ## System packages (install yourself)
 
@@ -98,11 +128,13 @@ Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node
 
 | Source | When | Where | Notes |
 |--------|------|--------|--------|
-| **npm packages** (`react`, `@tauri-apps/*`, `vite`, …) | `npm install` | `node_modules/` | From the npm registry |
+| **npm packages** | `npm install` | `node_modules/` | From the npm registry |
 | **FFmpeg source** (Git tag `n7.1`) | First `prepare:ffmpeg` (cache miss) | `.cache/ffmpeg/src/` | Cloned from GitHub mirror (fallback: `git.ffmpeg.org`) |
 | **Compiled FFmpeg / FFprobe** | Same build | `.cache/ffmpeg/n7.1-<arch>-<fingerprint>/` | Cached; later runs only copy |
-| **Staged binaries** | Every prepare | `src-tauri/resources/ffmpeg/{ffmpeg,ffprobe}` | Used by the app / Tauri bundle |
-| **Rust crates** | `cargo` / `tauri build` | Cargo registry + `src-tauri/target/` | Downloaded by Cargo as needed |
+| **Staged FFmpeg tools** | Every prepare | `src-tauri/resources/ffmpeg/{ffmpeg,ffprobe}` | Used by the app / Tauri bundle |
+| **Staged `replayboxd` sidecar** | `stage:daemon` / `tauri:dev` / `tauri:build` | `src-tauri/binaries/replayboxd-<triple>` | Tauri `externalBin`; gitignored |
+| **Rust crates** | `cargo` / `tauri build` | Cargo registry + target dir | Downloaded by Cargo as needed |
+| **Installed daemon (runtime)** | Enable background service | `~/.local/share/com.williambarrence.replaybox/bin/replayboxd` | systemd `ExecStart` target |
 | **App binary / installers** | `tauri build` | `src-tauri/target/release/` (+ bundle formats if enabled) | Production output |
 
 ### FFmpeg cache behavior
@@ -117,10 +149,13 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 
 | Command | Purpose |
 |---------|---------|
-| `npm run prepare:ffmpeg` | Only build/stage bundled FFmpeg |
-| `npm run tauri:dev` | Prepare FFmpeg + run the app in dev mode |
-| `npm run tauri:build` | Prepare FFmpeg + production Tauri build |
-| `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + production build |
+| `npm run prepare:ffmpeg` | Build/stage bundled FFmpeg only |
+| `npm run build:daemon` | `cargo build --bin replayboxd` via manifest path |
+| `npm run stage:daemon` | Build debug daemon + copy to `binaries/replayboxd-<triple>` |
+| `npm run stage:daemon:release` | Same for release (production) |
+| `npm run tauri:dev` | FFmpeg + stage daemon + Tauri/Vite dev |
+| `npm run tauri:build` | FFmpeg + stage release daemon + production Tauri build |
+| `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + stage + production build |
 
 ## License note (bundled FFmpeg)
 
@@ -130,9 +165,14 @@ The bundled FFmpeg is configured with **`--enable-gpl`** and **libx264**. Distri
 
 | Symptom | Likely cause |
 |---------|----------------|
+| `could not find Cargo.toml` in repo root | Run npm scripts from the root, or `cd src-tauri` / use `--manifest-path` |
+| `could not determine which binary to run` | Use `--bin replaybox` or rely on `default-run`; or `npm run tauri:dev` |
+| `resource path .../ffmpeg doesn't exist` | Run `npm run prepare:ffmpeg` |
+| `resource path .../binaries/replayboxd-... doesn't exist` | Run `npm run stage:daemon` (or `tauri:dev` / `tauri:build`) |
+| `replayboxd binary not found` when enabling the service | Stage/build the daemon first, then Save settings again |
+| Unit active but `ExecStart` under `/tmp/.mount_*` | Old unit; disable/re-enable the background service so it reinstalls under app data |
 | `nasm is required to build bundled FFmpeg` | Install `nasm` |
 | `libx264 not found` | Install `x264` (and headers / pkg-config file) |
-| `resource path .../ffmpeg doesn't exist` | Run `npm run prepare:ffmpeg` before a bare `cargo`/`tauri` build |
 | Slow first build | Normal: compiling FFmpeg from source can take several minutes |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev` |
 | Vite `The service is no longer running` after crash | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev` |

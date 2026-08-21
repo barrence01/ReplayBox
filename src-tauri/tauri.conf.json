@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.williambarrence.replaybox",
   "build": {
-    "beforeDevCommand": "npm run prepare:ffmpeg && npm run dev",
+    "beforeDevCommand": "npm run prepare:ffmpeg && npm run stage:daemon && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run prepare:ffmpeg && npm run build",
+    "beforeBuildCommand": "npm run prepare:ffmpeg && npm run stage:daemon:release && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -33,6 +33,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/replayboxd"
+    ],
     "resources": [
       "resources/ffmpeg/ffmpeg",
       "resources/ffmpeg/ffprobe"

@@ -19,15 +19,18 @@ pub struct BackgroundServiceStatus {
     pub message: String,
 }
 
-/// Resolve the `replayboxd` binary next to the current executable or under target/.
-pub fn resolve_daemon_binary() -> Result<PathBuf, String> {
+pub fn installed_daemon_path(app_data: &Path) -> PathBuf {
+    app_data.join("bin").join("replayboxd")
+}
+
+/// Locate a built or bundled `replayboxd` to copy into app data.
+pub fn find_source_daemon() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let beside = exe
-        .parent()
-        .map(|p| p.join("replayboxd"))
-        .filter(|p| p.is_file());
-    if let Some(p) = beside {
-        return p.canonicalize().map_err(|e| e.to_string());
+    if let Some(dir) = exe.parent() {
+        let beside = dir.join("replayboxd");
+        if beside.is_file() {
+            return beside.canonicalize().map_err(|e| e.to_string());
+        }
     }
 
     let candidates = [
@@ -35,17 +38,83 @@ pub fn resolve_daemon_binary() -> Result<PathBuf, String> {
         PathBuf::from("src-tauri/target/release/replayboxd"),
         PathBuf::from("target/debug/replayboxd"),
         PathBuf::from("target/release/replayboxd"),
+        PathBuf::from("src-tauri/binaries"),
     ];
-    for c in candidates {
+    for c in &candidates {
         if c.is_file() {
             return c.canonicalize().map_err(|e| e.to_string());
+        }
+        if c.is_dir() {
+            if let Ok(entries) = fs::read_dir(c) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("replayboxd-") && entry.path().is_file() {
+                        return entry.path().canonicalize().map_err(|e| e.to_string());
+                    }
+                }
+            }
         }
     }
 
     Err(
-        "replayboxd binary not found. Build it with `cargo build --bin replayboxd` in src-tauri."
+        "replayboxd binary not found. Run `npm run stage:daemon` (or `npm run tauri:dev`) from the repo root."
             .into(),
     )
+}
+
+/// Copy the source daemon into `{app_data}/bin/replayboxd` for a stable systemd ExecStart.
+pub fn install_daemon(app_data: &Path) -> Result<PathBuf, String> {
+    let source = find_source_daemon()?;
+    let dest = installed_daemon_path(app_data);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&source, &dest).map_err(|e| format!("failed to install replayboxd: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dest, perms).map_err(|e| e.to_string())?;
+    }
+    dest.canonicalize().map_err(|e| e.to_string())
+}
+
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    let len = meta.len();
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some((len, modified))
+}
+
+/// Re-copy daemon when the source binary is newer; restart the unit if it was active.
+pub fn refresh_installed_daemon(app_data: &Path) -> Result<(), String> {
+    let source = find_source_daemon()?;
+    let dest = installed_daemon_path(app_data);
+    let needs_copy = match (file_identity(&source), file_identity(&dest)) {
+        (Some(s), Some(d)) => s != d,
+        (Some(_), None) => true,
+        _ => true,
+    };
+    if !needs_copy {
+        return Ok(());
+    }
+    let was_active = is_unit_active();
+    let installed = install_daemon(app_data)?;
+    write_unit(&installed)?;
+    let _ = systemctl(&["daemon-reload"]);
+    if was_active {
+        let _ = systemctl(&["restart", UNIT_NAME]);
+    }
+    Ok(())
 }
 
 fn unit_path() -> Result<PathBuf, String> {
@@ -57,7 +126,10 @@ fn unit_path() -> Result<PathBuf, String> {
 
 fn write_unit(daemon: &Path) -> Result<(), String> {
     let path = unit_path()?;
-    let exec = daemon.to_string_lossy();
+    let exec = daemon
+        .canonicalize()
+        .unwrap_or_else(|_| daemon.to_path_buf());
+    let exec = exec.to_string_lossy();
     let body = format!(
         "[Unit]\n\
          Description=ReplayBox background indexer and session monitor\n\
@@ -90,11 +162,20 @@ fn systemctl(args: &[&str]) -> Result<String, String> {
     Ok(stdout)
 }
 
-pub fn enable_service() -> Result<(), String> {
-    let daemon = resolve_daemon_binary()?;
-    write_unit(&daemon)?;
+pub fn enable_service(app_data: &Path) -> Result<(), String> {
+    let installed = install_daemon(app_data)?;
+    write_unit(&installed)?;
     let _ = systemctl(&["daemon-reload"]);
-    systemctl(&["enable", "--now", UNIT_NAME])?;
+    systemctl(&["enable", "--now", UNIT_NAME]).map_err(|e| {
+        if e.contains("No such file") || e.is_empty() {
+            format!(
+                "{e} (installed daemon at {}; ensure systemd --user is available)",
+                installed.display()
+            )
+        } else {
+            e
+        }
+    })?;
     Ok(())
 }
 
@@ -132,7 +213,7 @@ pub fn sync_runtime(
 ) -> Result<(), String> {
     if enabled {
         stop_in_app(state);
-        enable_service()?;
+        enable_service(&state.app_data)?;
     } else {
         disable_service()?;
         let in_app_running = state.watcher.lock().is_some();
