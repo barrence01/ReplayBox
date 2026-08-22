@@ -1,9 +1,10 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -343,8 +344,15 @@ fn run_ffmpeg(
     on_progress: Option<ProgressFn>,
 ) -> Result<(), String> {
     let mut child = Command::new(ffmpeg)
+        .args([
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-stats_period",
+            "0.25",
+        ])
         .args(args)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to run ffmpeg ({ffmpeg}): {e}"))?;
@@ -353,13 +361,24 @@ fn run_ffmpeg(
         *slot.lock().unwrap() = Some(child.id());
     }
 
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ffmpeg stdout unavailable".to_string())?;
     let stderr = child
         .stderr
         .take()
         .ok_or_else(|| "ffmpeg stderr unavailable".to_string())?;
 
-    let mut err_buf = String::new();
-    let reader = BufReader::new(stderr);
+    // Drain stderr concurrently so a full pipe cannot deadlock ffmpeg.
+    let stderr_handle = thread::spawn(move || {
+        let mut buf = String::new();
+        let mut reader = BufReader::new(stderr);
+        let _ = reader.read_to_string(&mut buf);
+        buf
+    });
+
+    let reader = BufReader::new(stdout);
     let mut last_emit = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
@@ -369,10 +388,8 @@ fn run_ffmpeg(
             Ok(l) => l,
             Err(_) => break,
         };
-        err_buf.push_str(&line);
-        err_buf.push('\n');
 
-        if let (Some(cb), Some(secs)) = (&on_progress, parse_ffmpeg_time_secs(&line)) {
+        if let (Some(cb), Some(secs)) = (&on_progress, parse_progress_out_time_secs(&line)) {
             if duration_secs > 0.0 && last_emit.elapsed() >= Duration::from_millis(250) {
                 let fraction = (secs / duration_secs).clamp(0.0, 0.99);
                 cb(fraction);
@@ -380,6 +397,10 @@ fn run_ffmpeg(
             }
         }
     }
+
+    let err_buf = stderr_handle
+        .join()
+        .unwrap_or_else(|_| "ffmpeg stderr reader panicked".into());
 
     let status = child
         .wait()
@@ -395,7 +416,22 @@ fn run_ffmpeg(
     Ok(())
 }
 
-/// Parse `time=HH:MM:SS.xx` from an ffmpeg stderr line.
+/// Parse `out_time_us=` / `out_time_ms=` from ffmpeg `-progress` output.
+/// Both fields are microseconds (despite the `_ms` name).
+fn parse_progress_out_time_secs(line: &str) -> Option<f64> {
+    let rest = line
+        .strip_prefix("out_time_us=")
+        .or_else(|| line.strip_prefix("out_time_ms="))?;
+    let token = rest.trim();
+    if token.is_empty() || token.starts_with("N/A") {
+        return None;
+    }
+    let micros: f64 = token.parse().ok()?;
+    Some(micros / 1_000_000.0)
+}
+
+/// Parse `time=HH:MM:SS.xx` from an ffmpeg stderr line (legacy stats format).
+#[cfg(test)]
 fn parse_ffmpeg_time_secs(line: &str) -> Option<f64> {
     let idx = line.find("time=")?;
     let rest = &line[idx + 5..];
@@ -539,6 +575,22 @@ mod tests {
         );
         assert_eq!(parse_ffmpeg_time_secs("time=N/A"), None);
         assert_eq!(parse_ffmpeg_time_secs("no time here"), None);
+    }
+
+    #[test]
+    fn parse_progress_out_time_secs_reads_microseconds() {
+        assert_eq!(
+            parse_progress_out_time_secs("out_time_us=4388571"),
+            Some(4.388571)
+        );
+        assert_eq!(
+            parse_progress_out_time_secs("out_time_ms=4388571"),
+            Some(4.388571)
+        );
+        assert_eq!(parse_progress_out_time_secs("out_time_us=N/A"), None);
+        assert_eq!(parse_progress_out_time_secs("out_time_ms=N/A"), None);
+        assert_eq!(parse_progress_out_time_secs("progress=continue"), None);
+        assert_eq!(parse_progress_out_time_secs("frame=91"), None);
     }
 
     #[test]
