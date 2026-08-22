@@ -429,7 +429,7 @@ export function EditorView({
           <div className="editor__job-options">
             <h2>Trim</h2>
             <p className="hint">
-              Timeline uses timestamps (PTS), not frame numbers — safe for VFR.
+              Timeline uses timestamps (PTS), not frame numbers, safe for VFR.
             </p>
             <fieldset className="radio-group">
               <label>

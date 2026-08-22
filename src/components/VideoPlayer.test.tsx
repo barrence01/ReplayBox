@@ -404,6 +404,14 @@ describe("VideoPlayer", () => {
 
     const video = container.querySelector("video") as HTMLVideoElement;
     Object.defineProperty(video, "readyState", { configurable: true, value: 0 });
+    Object.defineProperty(video, "paused", {
+      configurable: true,
+      get: () => true,
+    });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
 
     onTimeUpdate.mockClear();
     ref.current?.seekTo(500);
@@ -414,14 +422,24 @@ describe("VideoPlayer", () => {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
+    let currentTimeSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
-      writable: true,
-      value: 0,
+      get: () => currentTimeSec,
+      set: (value: number) => {
+        currentTimeSec = value;
+      },
     });
     video.dispatchEvent(new Event("loadedmetadata"));
 
-    expect(video.currentTime).toBe(0.5);
+    // Seek priming warms demuxer at +1s before applying the pending user seek.
+    expect(currentTimeSec).toBe(1);
+
+    video.dispatchEvent(new Event("seeked"));
+    expect(currentTimeSec).toBe(0);
+
+    video.dispatchEvent(new Event("seeked"));
+    expect(currentTimeSec).toBe(0.5);
   });
 
   it("uses preload auto when video src is ready", async () => {
@@ -1175,7 +1193,7 @@ describe("VideoPlayer", () => {
     expect(currentTimeSec).toBe(5);
   });
 
-  it("endScrubAndLock nudges then seeks like a click when already near target", async () => {
+  it("endScrubAndLock early-completes when already near target", async () => {
     getPlaybackInfoMock.mockResolvedValue({
       url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
       mode: "cache",
@@ -1239,11 +1257,9 @@ describe("VideoPlayer", () => {
 
     ref.current?.endScrubAndLock(5000);
 
-    expect(onSeekingChange).toHaveBeenLastCalledWith(true);
-    expect(assigned.length).toBeGreaterThanOrEqual(2);
-    expect(assigned[0]).toBeCloseTo(4.95, 5);
-    expect(assigned[assigned.length - 1]).toBe(5);
-    expect(currentTimeSec).toBe(5);
+    expect(onSeekingChange).toHaveBeenLastCalledWith(false);
+    expect(assigned).toEqual([]);
+    expect(currentTimeSec).toBe(5.0005);
   });
 
   it("does not complete locked seek while video.seeking is true", async () => {
@@ -2039,10 +2055,19 @@ describe("VideoPlayer", () => {
     });
 
     const video = container.querySelector("video") as HTMLVideoElement;
+    const fastSeek = vi.fn();
+    Object.defineProperty(video, "fastSeek", {
+      configurable: true,
+      value: fastSeek,
+    });
     Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
     Object.defineProperty(video, "paused", {
       configurable: true,
       get: () => true,
+    });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
     });
     Object.defineProperty(video, "duration", {
       configurable: true,
@@ -2062,16 +2087,21 @@ describe("VideoPlayer", () => {
     });
 
     video.dispatchEvent(new Event("loadedmetadata"));
-    expect(currentTimeSec).toBe(0);
+    // Priming seek starts at +1s; scrub cancels it before it settles.
+    expect(currentTimeSec).toBe(1);
 
     onTimeUpdate.mockClear();
     onSeekingChange.mockClear();
 
     ref.current?.beginScrub();
     ref.current?.scrubTo(5000);
+    // fastSeek previews without settling currentTime; lock seek must stay open.
+    expect(fastSeek).toHaveBeenCalledWith(5);
+    expect(currentTimeSec).toBe(1);
+
     ref.current?.endScrubAndLock(5000);
     expect(currentTimeSec).toBe(5);
-    expect(onSeekingChange).toHaveBeenCalledWith(true);
+    expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
     currentTimeSec = 0;
     video.dispatchEvent(new Event("seeked"));
