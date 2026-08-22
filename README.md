@@ -8,7 +8,7 @@
 
 ---
 
-ReplayBox helps you turn long game recordings into shareable clips — browse your recordings folder, review today’s captures, trim and compress, then export a copy ready to upload or send.
+ReplayBox helps you turn long game recordings into shareable clips — browse your recordings folder, review the last 24 hours, trim and compress, then export a copy ready to upload or send.
 
 ---
 
@@ -23,7 +23,7 @@ ReplayBox helps you turn long game recordings into shareable clips — browse yo
 ## Features
 
 - **Game folders** — browse recordings by game under your watch directory
-- **Today’s session** — review recordings captured today
+- **Last 24 hours** — review recent captures
 - **System tray** — close to tray; indexing runs when the app starts (DB cache + async scan)
 - **Launch on login** — optional autostart from Settings
 - **Time-based trim** — precise (VFR-safe re-encode) or fast (stream copy; may cut on keyframe)
@@ -48,7 +48,7 @@ npm run build:all      # full production build (or ./scripts/build-all.sh)
 
 1. Open **Settings** and confirm the **watch folder**.
 2. (Optional) Enable **Start ReplayBox when you log in**, then Save.
-3. Use **Library** or **Session** (today’s clips) to browse recordings.
+3. Use **Library** or **Session** (last 24 hours) to browse recordings.
 4. Open a clip to trim or compress (**create a copy** or replace the original).
 5. Closing the window hides to the tray; use **Quit** in the tray menu to exit.
 
