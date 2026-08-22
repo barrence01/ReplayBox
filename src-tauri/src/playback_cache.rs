@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_ATTEMPTS_PER_STRATEGY: u8 = 1;
 const JOB_STALE_TIMEOUT: Duration = Duration::from_secs(180);
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
@@ -393,6 +393,12 @@ pub fn ensure_cache_job(
         };
     }
 
+    if state.settings.lock().playback_cache_max_gb == 0 {
+        return CacheJobStatus::Failed {
+            message: "Preview cache is disabled due to insufficient disk space.".into(),
+        };
+    }
+
     let cache_dir = state.paths.playback_cache_dir();
     let source = Path::new(&recording.path);
 
@@ -505,6 +511,87 @@ pub fn ensure_cache_job(
 fn cancel_job_entry(entry: &CacheJobEntry) {
     entry.cancel.store(true, Ordering::Relaxed);
     kill_child(&entry.child);
+}
+
+pub fn cancel_all_cache_jobs(jobs: &PlaybackCacheJobs) {
+    let mut guard = jobs.lock().expect("playback cache jobs lock");
+    for (_, entry) in guard.iter() {
+        cancel_job_entry(entry);
+    }
+    guard.clear();
+}
+
+fn is_cache_storage_file(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    if ext == "json" {
+        return true;
+    }
+    ext == "mp4"
+}
+
+fn cache_file_size(path: &Path) -> u64 {
+    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+pub fn playback_cache_used_bytes(cache_dir: &Path) -> u64 {
+    let Ok(read_dir) = fs::read_dir(cache_dir) else {
+        return 0;
+    };
+
+    read_dir
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("mp4") {
+                return None;
+            }
+            Some(cache_file_size(&path))
+        })
+        .sum()
+}
+
+pub fn clear_playback_cache_dir(cache_dir: &Path) -> Result<u64, String> {
+    if fs::create_dir_all(cache_dir).is_err() {
+        return Ok(0);
+    }
+
+    let Ok(read_dir) = fs::read_dir(cache_dir) else {
+        return Ok(0);
+    };
+
+    let mut freed = 0u64;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !is_cache_storage_file(&path) {
+            continue;
+        }
+        freed += cache_file_size(&path);
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(freed)
+}
+
+pub fn clear_thumbnails_dir(thumbs_dir: &Path) -> Result<u64, String> {
+    if fs::create_dir_all(thumbs_dir).is_err() {
+        return Ok(0);
+    }
+
+    let Ok(read_dir) = fs::read_dir(thumbs_dir) else {
+        return Ok(0);
+    };
+
+    let mut freed = 0u64;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        freed += cache_file_size(&path);
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(freed)
 }
 
 struct CacheEntryInfo {
@@ -794,5 +881,37 @@ mod tests {
         };
         run_cache_cleanup(&cache_dir, &policy);
         assert!(partial.exists());
+    }
+
+    #[test]
+    fn used_bytes_sums_mp4_files() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        fs::write(cache_file_path(&cache_dir, "a"), vec![0u8; 2048]).unwrap();
+        fs::write(
+            cache_temp_path(&cache_file_path(&cache_dir, "b")),
+            vec![0u8; 1024],
+        )
+        .unwrap();
+        fs::write(sidecar_path(&cache_dir, "a"), b"{}").unwrap();
+
+        assert_eq!(playback_cache_used_bytes(&cache_dir), 3072);
+    }
+
+    #[test]
+    fn clear_playback_cache_dir_removes_cache_files() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        fs::write(cache_file_path(&cache_dir, "a"), vec![0u8; 1000]).unwrap();
+        fs::write(sidecar_path(&cache_dir, "a"), b"{}").unwrap();
+
+        let freed = clear_playback_cache_dir(&cache_dir).unwrap();
+        assert_eq!(freed, 1002);
+        assert!(!cache_file_path(&cache_dir, "a").exists());
+        assert!(!sidecar_path(&cache_dir, "a").exists());
     }
 }

@@ -123,10 +123,17 @@ pub fn validate_watch_dir(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Preview cache limit must stay within a safe range (1–100 GB).
-pub fn validate_playback_cache_max_gb(gb: u32) -> Result<(), String> {
-    if !(1..=100).contains(&gb) {
-        return Err("Preview cache limit must be between 1 and 100 GB.".into());
+/// Preview cache limit must stay within the dynamic range for the current disk.
+pub fn validate_playback_cache_max_gb(gb: u32, limits: &crate::disk_space::PlaybackCacheLimits) -> Result<(), String> {
+    if limits.enabled {
+        if !(1..=limits.max_gb).contains(&gb) {
+            return Err(format!(
+                "Preview cache limit must be between 1 and {} GB.",
+                limits.max_gb
+            ));
+        }
+    } else if gb != 0 {
+        return Err("Preview cache is unavailable due to insufficient disk space.".into());
     }
     Ok(())
 }
@@ -244,10 +251,29 @@ mod tests {
 
     #[test]
     fn validate_playback_cache_max_gb_rejects_out_of_range() {
-        assert!(validate_playback_cache_max_gb(0).is_err());
-        assert!(validate_playback_cache_max_gb(101).is_err());
-        assert!(validate_playback_cache_max_gb(1).is_ok());
-        assert!(validate_playback_cache_max_gb(100).is_ok());
+        use crate::disk_space::PlaybackCacheLimits;
+
+        let disabled = PlaybackCacheLimits {
+            min_gb: 0,
+            max_gb: 0,
+            default_gb: 5,
+            free_gb: 1,
+            enabled: false,
+        };
+        assert!(validate_playback_cache_max_gb(0, &disabled).is_ok());
+        assert!(validate_playback_cache_max_gb(1, &disabled).is_err());
+
+        let enabled = PlaybackCacheLimits {
+            min_gb: 1,
+            max_gb: 10,
+            default_gb: 5,
+            free_gb: 50,
+            enabled: true,
+        };
+        assert!(validate_playback_cache_max_gb(0, &enabled).is_err());
+        assert!(validate_playback_cache_max_gb(11, &enabled).is_err());
+        assert!(validate_playback_cache_max_gb(1, &enabled).is_ok());
+        assert!(validate_playback_cache_max_gb(10, &enabled).is_ok());
     }
 
     #[test]

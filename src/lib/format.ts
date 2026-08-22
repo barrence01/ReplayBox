@@ -23,3 +23,21 @@ export function formatBytes(bytes: number | null): string {
   }
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
+
+const GB_BYTES = 1024 * 1024 * 1024;
+
+export function formatCacheGb(bytes: number): string {
+  const gb = bytes / GB_BYTES;
+  if (gb >= 10 || Math.abs(gb - Math.round(gb)) < 0.05) {
+    return `${Math.round(gb)} GB`;
+  }
+  return `${gb.toFixed(1)} GB`;
+}
+
+export function formatCacheUsage(usedBytes: number, maxGb: number): string {
+  const used = formatCacheGb(usedBytes);
+  if (maxGb <= 0) {
+    return `${used} / disabled`;
+  }
+  return `${used} / ${maxGb} GB`;
+}

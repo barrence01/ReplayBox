@@ -945,6 +945,18 @@ select {
   padding-top: 0.25rem;
 }
 
+.settings-cache-usage {
+  margin: 0;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-cache-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
 .row-input {
   display: grid;
   grid-template-columns: 1fr auto;

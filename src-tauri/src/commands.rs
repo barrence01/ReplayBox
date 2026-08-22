@@ -1,5 +1,6 @@
 use crate::catalog;
 use crate::db;
+use crate::disk_space::{self, PlaybackCacheLimits};
 use crate::ffmpeg;
 use crate::models::{
     CatalogScanFinished, CatalogScanStarted, CompressRequest, CopyPathInfo, JobStatus, PlaybackInfo,
@@ -9,12 +10,26 @@ use crate::playback::{self, PlaybackStrategy};
 use crate::playback_cache::{self, CacheJobStatus};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackCacheStats {
+    pub used_bytes: u64,
+    pub max_gb: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackCacheClearResult {
+    pub freed_bytes: u64,
+}
 
 #[derive(Debug, Clone)]
 pub enum ScanKind {
@@ -140,13 +155,44 @@ pub fn check_watch_dir(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn get_playback_cache_limits(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheLimits, String> {
+    disk_space::playback_cache_limits_for_dir(&state.paths.playback_cache_dir())
+}
+
+#[tauri::command]
+pub fn get_playback_cache_stats(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheStats, String> {
+    let settings = state.settings.lock();
+    Ok(PlaybackCacheStats {
+        used_bytes: playback_cache::playback_cache_used_bytes(&state.paths.playback_cache_dir()),
+        max_gb: settings.playback_cache_max_gb,
+    })
+}
+
+#[tauri::command]
+pub fn clear_playback_cache(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheClearResult, String> {
+    playback_cache::cancel_all_cache_jobs(&state.playback_cache_jobs);
+    let freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
+    Ok(PlaybackCacheClearResult { freed_bytes: freed })
+}
+
+#[tauri::command]
+pub fn clear_all_cache(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheClearResult, String> {
+    playback_cache::cancel_all_cache_jobs(&state.playback_cache_jobs);
+    let mut freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
+    freed += playback_cache::clear_thumbnails_dir(&state.paths.thumbs_dir())?;
+    db::clear_all_thumbnail_paths(&state.db.lock())?;
+    Ok(PlaybackCacheClearResult { freed_bytes: freed })
+}
+
+#[tauri::command]
 pub fn update_settings(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: Settings,
 ) -> Result<Settings, String> {
     settings::validate_watch_dir(&settings.watch_dir)?;
-    settings::validate_playback_cache_max_gb(settings.playback_cache_max_gb)?;
+    let limits = disk_space::playback_cache_limits_for_dir(&state.paths.playback_cache_dir())?;
+    settings::validate_playback_cache_max_gb(settings.playback_cache_max_gb, &limits)?;
     let path = state.paths.settings_path();
     settings.save(&path)?;
     *state.settings.lock() = settings.clone();

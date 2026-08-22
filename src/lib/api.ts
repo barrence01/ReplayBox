@@ -21,6 +21,39 @@ export function updateSettings(settings: Settings) {
   return invoke<Settings>("update_settings", { settings });
 }
 
+export interface PlaybackCacheLimits {
+  minGb: number;
+  maxGb: number;
+  defaultGb: number;
+  freeGb: number;
+  enabled: boolean;
+}
+
+export interface PlaybackCacheStats {
+  usedBytes: number;
+  maxGb: number;
+}
+
+export interface PlaybackCacheClearResult {
+  freedBytes: number;
+}
+
+export function getPlaybackCacheLimits() {
+  return invoke<PlaybackCacheLimits>("get_playback_cache_limits");
+}
+
+export function getPlaybackCacheStats() {
+  return invoke<PlaybackCacheStats>("get_playback_cache_stats");
+}
+
+export function clearPlaybackCache() {
+  return invoke<PlaybackCacheClearResult>("clear_playback_cache");
+}
+
+export function clearAllCache() {
+  return invoke<PlaybackCacheClearResult>("clear_all_cache");
+}
+
 export function listRecordings(query?: string) {
   return invoke<Recording[]>("list_recordings", { query: query ?? null });
 }

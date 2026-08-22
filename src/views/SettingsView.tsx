@@ -1,7 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
-import { checkWatchDir, resolvedToolPaths } from "../lib/api";
+import {
+  checkWatchDir,
+  clearAllCache,
+  clearPlaybackCache,
+  getPlaybackCacheLimits,
+  getPlaybackCacheStats,
+  resolvedToolPaths,
+  type PlaybackCacheLimits,
+  type PlaybackCacheStats,
+} from "../lib/api";
+import { formatCacheUsage } from "../lib/format";
 
 interface Props {
   settings: Settings;
@@ -9,16 +19,53 @@ interface Props {
   onSave: (settings: Settings) => Promise<void>;
 }
 
+function clampCacheGb(value: number, limits: PlaybackCacheLimits): number {
+  if (!limits.enabled) {
+    return 0;
+  }
+  return Math.min(Math.max(value, 1), limits.maxGb);
+}
+
 export function SettingsView({ settings, tools, onSave }: Props) {
   const [draft, setDraft] = useState<Settings>(settings);
+  const [limits, setLimits] = useState<PlaybackCacheLimits | null>(null);
+  const [stats, setStats] = useState<PlaybackCacheStats | null>(null);
   const [saving, setSaving] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
 
+  const refreshCacheInfo = useCallback(async () => {
+    const [nextLimits, nextStats] = await Promise.all([
+      getPlaybackCacheLimits(),
+      getPlaybackCacheStats(),
+    ]);
+    setLimits(nextLimits);
+    setStats(nextStats);
+    return { nextLimits, nextStats };
+  }, []);
+
   useEffect(() => {
     setDraft(settings);
   }, [settings]);
+
+  useEffect(() => {
+    refreshCacheInfo().catch(() => {
+      setLimits(null);
+      setStats(null);
+    });
+  }, [refreshCacheInfo, settings.playbackCacheMaxGb]);
+
+  useEffect(() => {
+    if (!limits) {
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      playbackCacheMaxGb: clampCacheGb(current.playbackCacheMaxGb, limits),
+    }));
+  }, [limits]);
 
   useEffect(() => {
     resolvedToolPaths()
@@ -53,8 +100,27 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       return;
     }
 
-    if (draft.playbackCacheMaxGb < 1 || draft.playbackCacheMaxGb > 100) {
-      setMessage("Preview cache limit must be between 1 and 100 GB.");
+    if (!limits) {
+      setMessage("Could not load preview cache limits.");
+      setMessageIsError(true);
+      return;
+    }
+
+    const cacheGb = clampCacheGb(draft.playbackCacheMaxGb, limits);
+    if (cacheGb !== draft.playbackCacheMaxGb) {
+      setDraft((d) => ({ ...d, playbackCacheMaxGb: cacheGb }));
+    }
+
+    if (limits.enabled && (cacheGb < 1 || cacheGb > limits.maxGb)) {
+      setMessage(
+        `Preview cache limit must be between 1 and ${limits.maxGb} GB.`,
+      );
+      setMessageIsError(true);
+      return;
+    }
+
+    if (!limits.enabled && cacheGb !== 0) {
+      setMessage("Preview cache is unavailable due to insufficient disk space.");
       setMessageIsError(true);
       return;
     }
@@ -64,7 +130,9 @@ export function SettingsView({ settings, tools, onSave }: Props) {
     setMessageIsError(false);
     try {
       await checkWatchDir(draft.watchDir);
-      await onSave(draft);
+      const payload = { ...draft, playbackCacheMaxGb: cacheGb };
+      await onSave(payload);
+      await refreshCacheInfo();
       setMessage("Settings saved.");
       setMessageIsError(false);
     } catch (e) {
@@ -74,6 +142,62 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       setSaving(false);
     }
   }
+
+  async function handleClearVideoCache() {
+    if (
+      !window.confirm(
+        "Remove all preview cache files? Previews may take longer until rebuilt.",
+      )
+    ) {
+      return;
+    }
+
+    setClearing(true);
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      await clearPlaybackCache();
+      await refreshCacheInfo();
+      setMessage("Video cache cleared.");
+      setMessageIsError(false);
+    } catch (e) {
+      setMessage(String(e));
+      setMessageIsError(true);
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function handleClearAllCache() {
+    if (
+      !window.confirm(
+        "Remove all preview cache and thumbnail files? Thumbnails will regenerate on the next library scan.",
+      )
+    ) {
+      return;
+    }
+
+    setClearing(true);
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      await clearAllCache();
+      await refreshCacheInfo();
+      setMessage("All cache cleared.");
+      setMessageIsError(false);
+    } catch (e) {
+      setMessage(String(e));
+      setMessageIsError(true);
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  const cacheBusy = saving || clearing;
+  const usageLabel =
+    stats != null
+      ? formatCacheUsage(stats.usedBytes, draft.playbackCacheMaxGb)
+      : "—";
 
   return (
     <section className="view">
@@ -160,13 +284,21 @@ export function SettingsView({ settings, tools, onSave }: Props) {
 
         <section className="settings-section">
           <h2>Preview cache</h2>
+          <p className="settings-cache-usage">{usageLabel}</p>
+          {limits && !limits.enabled && (
+            <p className="settings-field-meta error">
+              Preview cache unavailable — less than 1 GB free on this disk.
+            </p>
+          )}
           <label className="settings-field">
-            Maximum cache size (GB)
+            Maximum cache size ({draft.playbackCacheMaxGb} GB)
             <input
-              type="number"
+              type="range"
               min={1}
-              max={100}
-              value={draft.playbackCacheMaxGb}
+              max={limits?.maxGb ?? 1}
+              step={1}
+              value={limits?.enabled ? draft.playbackCacheMaxGb || 1 : 1}
+              disabled={!limits?.enabled || cacheBusy}
               onChange={(e) =>
                 setDraft((d) => ({
                   ...d,
@@ -175,11 +307,26 @@ export function SettingsView({ settings, tools, onSave }: Props) {
               }
             />
             <span className="settings-field-meta hint">
-              Stored in ~/.cache/org.replaybox/playback/. Maximum disk space
-              for preview cache. Entries older than 1 day are removed
-              automatically.
+              Stored in ~/.cache/org.replaybox/playback/
             </span>
           </label>
+          <div className="settings-cache-actions">
+            <button
+              type="button"
+              disabled={cacheBusy}
+              onClick={handleClearVideoCache}
+            >
+              Clear video cache
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={cacheBusy}
+              onClick={handleClearAllCache}
+            >
+              Clear all cache
+            </button>
+          </div>
         </section>
 
         <section className="settings-section">
@@ -197,7 +344,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
         </section>
 
         <div className="settings-actions">
-          <button type="button" disabled={saving} onClick={handleSave}>
+          <button type="button" disabled={cacheBusy} onClick={handleSave}>
             {saving ? "Saving…" : "Save settings"}
           </button>
           {message && (

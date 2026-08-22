@@ -212,6 +212,12 @@ pub fn delete_recording_by_id(conn: &Connection, id: &str) -> Result<Option<Stri
     Ok(thumb)
 }
 
+pub fn clear_all_thumbnail_paths(conn: &Connection) -> Result<(), String> {
+    conn.execute("UPDATE recordings SET thumbnail_path = NULL", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn map_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
     Ok(Recording {
         id: row.get(0)?,
@@ -302,5 +308,19 @@ mod tests {
         assert!(get_recording_by_path(&conn, "/videos/gone.mp4")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn clear_all_thumbnail_paths_nulls_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("test.db")).unwrap();
+        let mut rec = sample_recording("r4", "/videos/thumb.mp4");
+        rec.thumbnail_path = Some("/cache/thumbnails/r4.jpg".into());
+        upsert_recording(&conn, &rec).unwrap();
+
+        clear_all_thumbnail_paths(&conn).unwrap();
+
+        let loaded = get_recording_by_id(&conn, "r4").unwrap().unwrap();
+        assert!(loaded.thumbnail_path.is_none());
     }
 }

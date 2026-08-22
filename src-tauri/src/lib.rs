@@ -1,6 +1,7 @@
 mod catalog;
 mod commands;
 mod db;
+mod disk_space;
 mod ffmpeg;
 mod logging;
 mod media_server;
@@ -131,6 +132,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::check_watch_dir,
+            commands::get_playback_cache_limits,
+            commands::get_playback_cache_stats,
+            commands::clear_playback_cache,
+            commands::clear_all_cache,
             commands::update_settings,
             commands::list_recordings,
             commands::get_recording,
