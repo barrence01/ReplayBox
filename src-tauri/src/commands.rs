@@ -257,6 +257,10 @@ pub fn delete_recording(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<(), String> {
+    if let Some(job) = state.preview_queue.cancel_for_recording(&id) {
+        let _ = app.emit("preview-updated", job);
+    }
+
     let recording = {
         let conn = state.db.lock();
         db::get_recording_by_id(&conn, &id)?

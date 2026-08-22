@@ -184,6 +184,23 @@ impl PreviewQueue {
         }
     }
 
+    /// Cancel the active preview job for a recording, if any (queued or processing).
+    pub fn cancel_for_recording(&self, recording_id: &str) -> Option<JobStatus> {
+        let job_id = self.lookup_by_recording(recording_id)?.0.id;
+        match self.cancel_job(&job_id) {
+            Ok(mut job) => {
+                if let Ok(mut guard) = self.inner.lock() {
+                    if let Some(entry) = guard.entries.get_mut(&job.id) {
+                        entry.job.message = Some("Cancelled: recording deleted".into());
+                        job = entry.job.clone();
+                    }
+                }
+                Some(job)
+            }
+            Err(_) => None,
+        }
+    }
+
     pub fn cancel_all(&self) {
         let mut guard = self.inner.lock().expect("preview queue lock");
         let pending: Vec<String> = guard.pending.drain(..).collect();
@@ -633,6 +650,38 @@ mod tests {
         let job = q.cancel_job(&id).unwrap();
         assert_eq!(job.status, "cancelled");
         assert!(q.inner.lock().unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn cancel_for_recording_cancels_queued() {
+        let q = PreviewQueue::new();
+        let id = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let job = q.cancel_for_recording("a").unwrap();
+        assert_eq!(job.id, id);
+        assert_eq!(job.status, "cancelled");
+        assert_eq!(
+            job.message.as_deref(),
+            Some("Cancelled: recording deleted")
+        );
+        assert!(q.lookup_by_recording("a").is_none());
+        assert!(q.inner.lock().unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn cancel_for_recording_cancels_processing() {
+        let q = PreviewQueue::new();
+        let id = enqueue_raw(&q, "a", PlaybackStrategy::Transcode);
+        let (taken, _) = q.try_take_next().unwrap();
+        assert_eq!(taken, id);
+        let job = q.cancel_for_recording("a").unwrap();
+        assert_eq!(job.status, "cancelled");
+        assert!(q.lookup_by_recording("a").is_none());
+    }
+
+    #[test]
+    fn cancel_for_recording_noop_when_absent() {
+        let q = PreviewQueue::new();
+        assert!(q.cancel_for_recording("missing").is_none());
     }
 
     #[test]
