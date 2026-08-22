@@ -4,6 +4,7 @@ mod db;
 mod disk_space;
 mod ffmpeg;
 mod job_queue;
+mod job_run_gate;
 mod logging;
 mod media_server;
 mod models;
@@ -17,25 +18,72 @@ mod tools;
 use settings::{AppPaths, Settings};
 use state::AppState;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
-fn show_main_window(app: &tauri::AppHandle) {
+struct TrayMenuState {
+    pause_item: MenuItem<tauri::Wry>,
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        commands::resume_from_tray(app, state.inner());
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
-fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn update_pause_menu_label(app: &AppHandle) {
+    let Some(tray_menu) = app.try_state::<StdMutex<TrayMenuState>>() else {
+        return;
+    };
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let label = if state.job_run_gate.jobs_paused() {
+        "Resume Jobs"
+    } else {
+        "Pause Jobs"
+    };
+    if let Ok(guard) = tray_menu.lock() {
+        let _ = guard.pause_item.set_text(label);
+    };
+}
+
+fn toggle_jobs_paused(app: &AppHandle) {
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let next = !state.job_run_gate.jobs_paused();
+    state.set_jobs_paused(next);
+    let _ = app.emit("jobs-paused-changed", next);
+    update_pause_menu_label(app);
+}
+
+fn quit_app(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        commands::cleanup_on_quit(app, state.inner());
+    }
+    app.exit(0);
+}
+
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let pause_i = MenuItem::with_id(app, "pause_jobs", "Pause Jobs", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&show_i, &pause_i, &quit_i])?;
+
+    app.manage(StdMutex::new(TrayMenuState {
+        pause_item: pause_i,
+    }));
 
     let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
 
@@ -46,7 +94,8 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
-            "quit" => app.exit(0),
+            "pause_jobs" => toggle_jobs_paused(app),
+            "quit" => quit_app(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -163,6 +212,9 @@ pub fn run() {
             commands::clear_finished_preview_jobs,
             commands::cancel_job,
             commands::cancel_preview_job,
+            commands::cancel_preview_for_recording,
+            commands::get_jobs_paused,
+            commands::set_jobs_paused,
             commands::start_trim,
             commands::start_compress,
         ])
@@ -177,6 +229,9 @@ pub fn run() {
             {
                 if label == "main" {
                     api.prevent_close();
+                    if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                        commands::suspend_for_tray(app_handle, state.inner());
+                    }
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.hide();
                     }

@@ -8,6 +8,7 @@ use crate::playback_cache::{
     write_cache_sidecar, CleanupPolicy,
 };
 use crate::state::AppState;
+use crate::job_run_gate::JobRunGate;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,16 +53,17 @@ struct PreviewQueueInner {
 pub struct PreviewQueue {
     inner: Mutex<PreviewQueueInner>,
     cvar: Condvar,
+    gate: Arc<JobRunGate>,
 }
 
 pub type SharedPreviewQueue = Arc<PreviewQueue>;
 
-pub fn new_preview_queue() -> SharedPreviewQueue {
-    Arc::new(PreviewQueue::new())
+pub fn new_preview_queue(gate: Arc<JobRunGate>) -> SharedPreviewQueue {
+    Arc::new(PreviewQueue::new(gate))
 }
 
 impl PreviewQueue {
-    pub fn new() -> Self {
+    pub fn new(gate: Arc<JobRunGate>) -> Self {
         Self {
             inner: Mutex::new(PreviewQueueInner {
                 entries: HashMap::new(),
@@ -71,7 +73,12 @@ impl PreviewQueue {
                 worker_started: false,
             }),
             cvar: Condvar::new(),
+            gate,
         }
+    }
+
+    pub fn notify_workers(&self) {
+        self.cvar.notify_all();
     }
 
     pub fn list(&self) -> Vec<JobStatus> {
@@ -185,14 +192,20 @@ impl PreviewQueue {
     }
 
     /// Cancel the active preview job for a recording, if any (queued or processing).
-    pub fn cancel_for_recording(&self, recording_id: &str) -> Option<JobStatus> {
+    pub fn cancel_for_recording(
+        &self,
+        recording_id: &str,
+        message: Option<&str>,
+    ) -> Option<JobStatus> {
         let job_id = self.lookup_by_recording(recording_id)?.0.id;
         match self.cancel_job(&job_id) {
             Ok(mut job) => {
-                if let Ok(mut guard) = self.inner.lock() {
-                    if let Some(entry) = guard.entries.get_mut(&job.id) {
-                        entry.job.message = Some("Cancelled: recording deleted".into());
-                        job = entry.job.clone();
+                if let Some(msg) = message {
+                    if let Ok(mut guard) = self.inner.lock() {
+                        if let Some(entry) = guard.entries.get_mut(&job.id) {
+                            entry.job.message = Some(msg.into());
+                            job = entry.job.clone();
+                        }
                     }
                 }
                 Some(job)
@@ -201,8 +214,10 @@ impl PreviewQueue {
         }
     }
 
-    pub fn cancel_all(&self) {
+    /// Cancel all queued and processing preview jobs. Returns cancelled snapshots.
+    pub fn cancel_all(&self) -> Vec<JobStatus> {
         let mut guard = self.inner.lock().expect("preview queue lock");
+        let mut cancelled = Vec::new();
         let pending: Vec<String> = guard.pending.drain(..).collect();
         for id in pending {
             if let Some(entry) = guard.entries.get_mut(&id) {
@@ -210,6 +225,7 @@ impl PreviewQueue {
                 entry.job.status = "cancelled".into();
                 entry.job.message = Some("Cancelled".into());
                 entry.job.finished_at = Some(now_rfc3339());
+                cancelled.push(entry.job.clone());
             }
         }
         if let Some(id) = guard.processing.clone() {
@@ -218,9 +234,14 @@ impl PreviewQueue {
                 kill_child(&entry.child);
                 entry.job.status = "cancelled".into();
                 entry.job.message = Some("Cancelled".into());
+                if entry.job.finished_at.is_none() {
+                    entry.job.finished_at = Some(now_rfc3339());
+                }
+                cancelled.push(entry.job.clone());
             }
         }
         self.cvar.notify_all();
+        cancelled
     }
 
     pub fn ensure_worker_started<F>(&self, start: F)
@@ -238,7 +259,7 @@ impl PreviewQueue {
     pub fn take_next_work(&self) -> (String, PreviewWork) {
         let mut guard = self.inner.lock().expect("preview queue lock");
         loop {
-            if let Some(work) = Self::activate_next_locked(&mut guard) {
+            if let Some(work) = self.activate_next_locked(&mut guard) {
                 return work;
             }
             guard = self.cvar.wait(guard).expect("preview queue wait");
@@ -248,11 +269,11 @@ impl PreviewQueue {
     #[cfg(test)]
     pub fn try_take_next(&self) -> Option<(String, PreviewWork)> {
         let mut guard = self.inner.lock().expect("preview queue lock");
-        Self::activate_next_locked(&mut guard)
+        self.activate_next_locked(&mut guard)
     }
 
-    fn activate_next_locked(guard: &mut PreviewQueueInner) -> Option<(String, PreviewWork)> {
-        if guard.processing.is_some() {
+    fn activate_next_locked(&self, guard: &mut PreviewQueueInner) -> Option<(String, PreviewWork)> {
+        if self.gate.is_paused() || guard.processing.is_some() {
             return None;
         }
         while let Some(id) = guard.pending.pop_front() {
@@ -632,7 +653,7 @@ mod tests {
 
     #[test]
     fn fifo_only_one_processing() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         let b = enqueue_raw(&q, "b", PlaybackStrategy::Transcode);
         let (id, _) = q.try_take_next().unwrap();
@@ -645,7 +666,7 @@ mod tests {
 
     #[test]
     fn cancel_queued() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let id = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         let job = q.cancel_job(&id).unwrap();
         assert_eq!(job.status, "cancelled");
@@ -654,9 +675,11 @@ mod tests {
 
     #[test]
     fn cancel_for_recording_cancels_queued() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let id = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
-        let job = q.cancel_for_recording("a").unwrap();
+        let job = q
+            .cancel_for_recording("a", Some("Cancelled: recording deleted"))
+            .unwrap();
         assert_eq!(job.id, id);
         assert_eq!(job.status, "cancelled");
         assert_eq!(
@@ -669,24 +692,24 @@ mod tests {
 
     #[test]
     fn cancel_for_recording_cancels_processing() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let id = enqueue_raw(&q, "a", PlaybackStrategy::Transcode);
         let (taken, _) = q.try_take_next().unwrap();
         assert_eq!(taken, id);
-        let job = q.cancel_for_recording("a").unwrap();
+        let job = q.cancel_for_recording("a", None).unwrap();
         assert_eq!(job.status, "cancelled");
         assert!(q.lookup_by_recording("a").is_none());
     }
 
     #[test]
     fn cancel_for_recording_noop_when_absent() {
-        let q = PreviewQueue::new();
-        assert!(q.cancel_for_recording("missing").is_none());
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
+        assert!(q.cancel_for_recording("missing", None).is_none());
     }
 
     #[test]
     fn lookup_by_recording_returns_position() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         let _b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
 
@@ -703,7 +726,7 @@ mod tests {
 
     #[test]
     fn lookup_ignores_terminal() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         q.try_take_next().unwrap();
         q.finish_work(&a, Ok(PathBuf::from("/tmp/a.mp4")));
@@ -712,7 +735,7 @@ mod tests {
 
     #[test]
     fn dismiss_terminal_only() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         assert!(q.dismiss(&a).is_err());
 
@@ -724,7 +747,7 @@ mod tests {
 
     #[test]
     fn clear_finished_keeps_queued() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         let _b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
         q.try_take_next().unwrap();
@@ -739,11 +762,24 @@ mod tests {
 
     #[test]
     fn cancel_processing_sets_finished_at() {
-        let q = PreviewQueue::new();
+        let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
         q.try_take_next().unwrap();
         let job = q.cancel_job(&a).unwrap();
         assert_eq!(job.status, "cancelled");
         assert!(job.finished_at.is_some());
+    }
+
+    #[test]
+    fn paused_gate_blocks_take_next() {
+        let gate = Arc::new(JobRunGate::new());
+        let q = PreviewQueue::new(gate.clone());
+        enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+
+        gate.set_jobs_paused(true);
+        assert!(q.try_take_next().is_none());
+
+        gate.set_jobs_paused(false);
+        assert!(q.try_take_next().is_some());
     }
 }

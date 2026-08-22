@@ -131,6 +131,18 @@ export function cancelPreviewJob(jobId: string) {
   return invoke<void>("cancel_preview_job", { jobId });
 }
 
+export function cancelPreviewForRecording(recordingId: string) {
+  return invoke<void>("cancel_preview_for_recording", { recordingId });
+}
+
+export function getJobsPaused() {
+  return invoke<boolean>("get_jobs_paused");
+}
+
+export function setJobsPaused(paused: boolean) {
+  return invoke<boolean>("set_jobs_paused", { paused });
+}
+
 export function dismissJob(jobId: string) {
   return invoke<void>("dismiss_job", { jobId });
 }

@@ -26,6 +26,10 @@ describe("VideoPlayer", () => {
       configurable: true,
       value: vi.fn(),
     });
+    Object.defineProperty(HTMLMediaElement.prototype, "load", {
+      configurable: true,
+      value: vi.fn(),
+    });
   });
 
   it("loads direct playback url on mount", async () => {
@@ -53,6 +57,37 @@ describe("VideoPlayer", () => {
     });
 
     expect(getPlaybackInfoMock).toHaveBeenCalledWith("rec-1");
+  });
+
+  it("releases video element on unmount", async () => {
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      mode: "direct",
+    });
+
+    const { container, unmount } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")?.getAttribute("src")).toBe(
+        "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      );
+    });
+
+    const video = container.querySelector("video")!;
+    unmount();
+
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled();
+    expect(video.getAttribute("src")).toBeNull();
+    expect(HTMLMediaElement.prototype.load).toHaveBeenCalled();
   });
 
   it("requests cache remux fallback after direct error", async () => {

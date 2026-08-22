@@ -1,4 +1,5 @@
 use crate::job_queue::{new_edit_job_queue, SharedEditJobQueue};
+use crate::job_run_gate::JobRunGate;
 use crate::preview_queue::{new_preview_queue, SharedPreviewQueue};
 use crate::settings::{AppPaths, Settings};
 use parking_lot::Mutex;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub settings: Mutex<Settings>,
     pub scan_state: Mutex<ScanState>,
+    pub job_run_gate: Arc<JobRunGate>,
     pub edit_jobs: SharedEditJobQueue,
     /// Running ffmpeg PIDs keyed by edit job id (for cancel).
     pub job_pids: Mutex<HashMap<String, Arc<std::sync::Mutex<Option<u32>>>>>,
@@ -35,6 +37,7 @@ impl AppState {
         db: Connection,
         settings: Settings,
     ) -> Arc<Self> {
+        let job_run_gate = Arc::new(JobRunGate::new());
         Arc::new(Self {
             paths,
             resource_dir,
@@ -42,9 +45,10 @@ impl AppState {
             db: Mutex::new(db),
             settings: Mutex::new(settings),
             scan_state: Mutex::new(ScanState::default()),
-            edit_jobs: new_edit_job_queue(),
+            edit_jobs: new_edit_job_queue(job_run_gate.clone()),
             job_pids: Mutex::new(HashMap::new()),
-            preview_queue: new_preview_queue(),
+            preview_queue: new_preview_queue(job_run_gate.clone()),
+            job_run_gate,
         })
     }
 
@@ -56,5 +60,21 @@ impl AppState {
     pub fn ffprobe_bin(&self) -> String {
         let settings = self.settings.lock();
         crate::tools::resolve_ffprobe(&settings, self.resource_dir.as_deref())
+    }
+
+    /// Notify both job workers after changing the run gate.
+    pub fn notify_job_workers(&self) {
+        self.edit_jobs.notify_workers();
+        self.preview_queue.notify_workers();
+    }
+
+    pub fn set_tray_suspended(&self, suspended: bool) {
+        self.job_run_gate.set_tray_suspended(suspended);
+        self.notify_job_workers();
+    }
+
+    pub fn set_jobs_paused(&self, paused: bool) {
+        self.job_run_gate.set_jobs_paused(paused);
+        self.notify_job_workers();
     }
 }

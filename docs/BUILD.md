@@ -117,7 +117,7 @@ tail -f ~/.local/share/org.replaybox/logs/ffmpeg.log.$(date +%F)
 
 ## System tray
 
-The tray icon (StatusNotifier on KDE Plasma; AppIndicator on some other desktops) provides **Show** and **Quit**. Closing the main window hides the app; **Quit** exits the process.
+The tray icon (StatusNotifier on KDE Plasma; AppIndicator on some other desktops) provides **Show**, **Pause Jobs** / **Resume Jobs**, and **Quit**. Closing the main window hides the app to the tray, releases editor/UI resources, cancels preview preparation jobs, and pauses job queues (in-flight edit jobs finish; no new work starts). Reopening always returns to the Library home. **Pause Jobs** is a sticky toggle that keeps queues paused even after the window is shown again. **Quit** cancels active jobs and exits the process.
 
 On **KDE Plasma**, the tray icon usually works out of the box via StatusNotifier. On **GNOME**, install AppIndicator/StatusNotifier support if the icon is missing (e.g. `libayatana-appindicator` / `libappindicator-gtk3` depending on the distro).
 

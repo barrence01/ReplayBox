@@ -2,6 +2,7 @@
 
 use crate::models::{CompressRequest, JobStatus, Recording, TrimRequest};
 use crate::settings::Settings;
+use crate::job_run_gate::JobRunGate;
 use chrono::Utc;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -35,16 +36,11 @@ struct EditQueueInner {
 pub struct EditJobQueue {
     inner: Mutex<EditQueueInner>,
     cvar: Condvar,
-}
-
-impl Default for EditJobQueue {
-    fn default() -> Self {
-        Self::new()
-    }
+    gate: Arc<JobRunGate>,
 }
 
 impl EditJobQueue {
-    pub fn new() -> Self {
+    pub fn new(gate: Arc<JobRunGate>) -> Self {
         Self {
             inner: Mutex::new(EditQueueInner {
                 jobs: HashMap::new(),
@@ -54,7 +50,12 @@ impl EditJobQueue {
                 worker_started: false,
             }),
             cvar: Condvar::new(),
+            gate,
         }
+    }
+
+    pub fn notify_workers(&self) {
+        self.cvar.notify_all();
     }
 
     pub fn enqueue(&self, job: JobStatus, payload: PendingEditJob) -> JobStatus {
@@ -146,9 +147,10 @@ impl EditJobQueue {
     }
 
     fn activate_next_locked(
+        &self,
         guard: &mut EditQueueInner,
     ) -> Option<(String, PendingEditJob)> {
-        if guard.processing.is_some() {
+        if self.gate.is_paused() || guard.processing.is_some() {
             return None;
         }
         while let Some(id) = guard.pending.pop_front() {
@@ -172,7 +174,7 @@ impl EditJobQueue {
     pub fn take_next_work(&self) -> (String, PendingEditJob) {
         let mut guard = self.inner.lock().expect("edit job queue lock");
         loop {
-            if let Some(work) = Self::activate_next_locked(&mut guard) {
+            if let Some(work) = self.activate_next_locked(&mut guard) {
                 return work;
             }
             guard = self.cvar.wait(guard).expect("edit job queue wait");
@@ -182,7 +184,17 @@ impl EditJobQueue {
     #[cfg(test)]
     pub fn try_take_next(&self) -> Option<(String, PendingEditJob)> {
         let mut guard = self.inner.lock().expect("edit job queue lock");
-        Self::activate_next_locked(&mut guard)
+        self.activate_next_locked(&mut guard)
+    }
+
+    /// Ids of queued jobs plus the job currently processing, if any.
+    pub fn active_job_ids(&self) -> Vec<String> {
+        let guard = self.inner.lock().expect("edit job queue lock");
+        let mut ids: Vec<String> = guard.pending.iter().cloned().collect();
+        if let Some(id) = guard.processing.clone() {
+            ids.push(id);
+        }
+        ids
     }
 
     pub fn finish_job(
@@ -243,14 +255,18 @@ pub fn is_terminal(status: &str) -> bool {
 
 pub type SharedEditJobQueue = Arc<EditJobQueue>;
 
-pub fn new_edit_job_queue() -> SharedEditJobQueue {
-    Arc::new(EditJobQueue::new())
+pub fn new_edit_job_queue(gate: Arc<JobRunGate>) -> SharedEditJobQueue {
+    Arc::new(EditJobQueue::new(gate))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{CompressRequest, Recording, TrimRequest};
+
+    fn test_queue() -> EditJobQueue {
+        EditJobQueue::new(Arc::new(JobRunGate::new()))
+    }
 
     fn sample_recording(id: &str) -> Recording {
         Recording {
@@ -323,7 +339,7 @@ mod tests {
 
     #[test]
     fn enqueue_mixed_kinds_stay_queued_until_taken() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("t1", "trim"), trim_payload("t1"));
         q.enqueue(queued_job("c1", "compress"), compress_payload("c1"));
         q.enqueue(queued_job("t2", "trim"), trim_payload("t2"));
@@ -338,7 +354,7 @@ mod tests {
 
     #[test]
     fn cancel_queued_removes_from_pending() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("a", "trim"), trim_payload("a"));
         q.enqueue(queued_job("b", "compress"), compress_payload("b"));
 
@@ -352,7 +368,7 @@ mod tests {
 
     #[test]
     fn take_next_marks_processing_and_only_one() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("a", "trim"), trim_payload("a"));
         q.enqueue(queued_job("b", "compress"), compress_payload("b"));
 
@@ -369,7 +385,7 @@ mod tests {
 
     #[test]
     fn dismiss_only_terminal() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("a", "trim"), trim_payload("a"));
         assert!(q.dismiss("a").is_err());
         q.mark_cancelled_if_queued("a").unwrap();
@@ -379,7 +395,7 @@ mod tests {
 
     #[test]
     fn cancel_processing_sets_finished_at() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("a", "trim"), trim_payload("a"));
         let (id, _) = q.try_take_next().unwrap();
         assert_eq!(id, "a");
@@ -391,7 +407,7 @@ mod tests {
 
     #[test]
     fn clear_finished_keeps_active() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("done", "trim"), trim_payload("done"));
         q.enqueue(queued_job("active", "compress"), compress_payload("active"));
         let (id, _) = q.try_take_next().unwrap();
@@ -406,7 +422,7 @@ mod tests {
 
     #[test]
     fn update_progress_only_while_processing() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("a", "trim"), trim_payload("a"));
         assert!(q.update_progress("a", 0.5).is_none());
 
@@ -418,10 +434,38 @@ mod tests {
 
     #[test]
     fn dismiss_rejects_processing() {
-        let q = EditJobQueue::new();
+        let q = test_queue();
         q.enqueue(queued_job("a", "trim"), trim_payload("a"));
         let (id, _) = q.try_take_next().unwrap();
         let err = q.dismiss(&id).unwrap_err();
         assert!(err.contains("finished"));
+    }
+
+    #[test]
+    fn paused_gate_blocks_take_next() {
+        let gate = Arc::new(JobRunGate::new());
+        let q = EditJobQueue::new(gate.clone());
+        q.enqueue(queued_job("a", "trim"), trim_payload("a"));
+
+        gate.set_jobs_paused(true);
+        assert!(q.try_take_next().is_none());
+        assert_eq!(q.get("a").unwrap().status, "queued");
+
+        gate.set_jobs_paused(false);
+        let (id, _) = q.try_take_next().unwrap();
+        assert_eq!(id, "a");
+    }
+
+    #[test]
+    fn tray_suspended_blocks_take_next() {
+        let gate = Arc::new(JobRunGate::new());
+        let q = EditJobQueue::new(gate.clone());
+        q.enqueue(queued_job("a", "trim"), trim_payload("a"));
+
+        gate.set_tray_suspended(true);
+        assert!(q.try_take_next().is_none());
+
+        gate.set_tray_suspended(false);
+        assert!(q.try_take_next().is_some());
     }
 }

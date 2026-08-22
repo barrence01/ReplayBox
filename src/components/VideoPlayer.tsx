@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -17,6 +18,12 @@ import {
   clampToSeekableSec,
   isSeekAtTargetSec,
 } from "../lib/videoSeek";
+
+function releaseVideoElement(video: HTMLVideoElement) {
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+}
 
 export interface VideoPlayerHandle {
   play: () => Promise<void>;
@@ -66,6 +73,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     ref,
   ) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
+      if (videoRef.current && !node) {
+        releaseVideoElement(videoRef.current);
+      }
+      videoRef.current = node;
+    }, []);
     const missingNotified = useRef(false);
     const fallbackLevel = useRef(0);
     const endedNaturally = useRef(false);
@@ -738,6 +751,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         cancelled = true;
         clearPlaybackTimers();
         clearScrubSeekTimeout();
+        if (videoRef.current) {
+          releaseVideoElement(videoRef.current);
+        }
       };
     }, [recordingId, onError]);
 
@@ -841,7 +857,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     return (
       <div className="video-player">
         <video
-          ref={videoRef}
+          ref={setVideoRef}
           key={videoSrc}
           src={videoSrc || undefined}
           preload={videoPreload}

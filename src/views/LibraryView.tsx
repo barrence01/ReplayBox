@@ -16,6 +16,7 @@ import {
 interface Props {
   watchDir: string;
   recordings: Recording[];
+  libraryReady: boolean;
   onOpen: (recording: Recording) => void;
   onRescan: () => Promise<void>;
   onScanFolder: (folderPath: string) => Promise<void>;
@@ -26,6 +27,7 @@ interface Props {
 export function LibraryView({
   watchDir,
   recordings,
+  libraryReady,
   onOpen,
   onRescan,
   onScanFolder,
@@ -149,7 +151,9 @@ export function LibraryView({
       </header>
 
       {!selectedFolder ? (
-        filteredFolders.length === 0 ? (
+        !libraryReady ? (
+          <p className="empty-state">Loading library…</p>
+        ) : filteredFolders.length === 0 ? (
           <p className="empty-state">
             No game folders found. Set a watch folder in Settings and rescan.
           </p>

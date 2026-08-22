@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelJob,
+  cancelPreviewForRecording,
   cancelPreviewJob,
   checkTools,
   clearFinishedJobs,
@@ -45,6 +46,8 @@ function App() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [selected, setSelected] = useState<Recording | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [libraryReady, setLibraryReady] = useState(false);
+  const [libraryResetKey, setLibraryResetKey] = useState(0);
   const [tools, setTools] = useState({ ffmpeg: false, ffprobe: false });
   const [banner, setBanner] = useState<string | null>(null);
   const [editJobs, setEditJobs] = useState<JobStatus[]>([]);
@@ -69,19 +72,57 @@ function App() {
     }
   }, []);
 
+  const releaseEditorResources = useCallback((recordingId: string | null) => {
+    if (!recordingId) return;
+    void cancelPreviewForRecording(recordingId).catch(() => {
+      /* preview may already be gone */
+    });
+  }, []);
+
+  const goToLibraryHome = useCallback(() => {
+    setSelected((current) => {
+      if (current) {
+        releaseEditorResources(current.id);
+      }
+      return null;
+    });
+    setReturnView("library");
+    setView("library");
+    setLibraryResetKey((k) => k + 1);
+  }, [releaseEditorResources]);
+
+  const navigateTo = useCallback(
+    (next: ReturnView) => {
+      setSelected((current) => {
+        if (current) {
+          releaseEditorResources(current.id);
+        }
+        return null;
+      });
+      setView(next);
+    },
+    [releaseEditorResources],
+  );
+
   useEffect(() => {
     (async () => {
       try {
-        const [s, t] = await Promise.all([getSettings(), checkTools()]);
+        const [s, t, list] = await Promise.all([
+          getSettings(),
+          checkTools(),
+          listRecordings(),
+        ]);
         setSettings(s);
         setTools({ ffmpeg: t[0], ffprobe: t[1] });
-        await refreshLibrary();
+        setRecordings(list);
+        setLibraryReady(true);
         await refreshQueues();
       } catch (e) {
         setBanner(String(e));
+        setLibraryReady(true);
       }
     })();
-  }, [refreshLibrary, refreshQueues]);
+  }, [refreshQueues]);
 
   useEffect(() => {
     const unsubs: Array<() => void> = [];
@@ -128,10 +169,19 @@ function App() {
       setPreviewJobs((prev) => mergeJob(prev, e.payload));
     }).then((u) => unsubs.push(u));
 
+    listen("app-to-tray", () => {
+      goToLibraryHome();
+      void refreshQueues();
+    }).then((u) => unsubs.push(u));
+
+    listen("app-from-tray", () => {
+      goToLibraryHome();
+    }).then((u) => unsubs.push(u));
+
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [refreshLibrary, selected]);
+  }, [refreshLibrary, refreshQueues, selected, goToLibraryHome]);
 
   useEffect(() => {
     if (view === "queues") {
@@ -141,14 +191,24 @@ function App() {
 
   function openRecording(recording: Recording) {
     if (view !== "editor") {
-      setReturnView(view);
+      setReturnView(view as ReturnView);
     }
-    setSelected(recording);
+    setSelected((current) => {
+      if (current && current.id !== recording.id) {
+        releaseEditorResources(current.id);
+      }
+      return recording;
+    });
     setView("editor");
   }
 
   function leaveEditor() {
-    setSelected(null);
+    setSelected((current) => {
+      if (current) {
+        releaseEditorResources(current.id);
+      }
+      return null;
+    });
     setView(returnView);
   }
 
@@ -167,28 +227,28 @@ function App() {
         <button
           type="button"
           className={view === "library" ? "active" : ""}
-          onClick={() => setView("library")}
+          onClick={() => navigateTo("library")}
         >
           Library
         </button>
         <button
           type="button"
           className={view === "session" ? "active" : ""}
-          onClick={() => setView("session")}
+          onClick={() => navigateTo("session")}
         >
           Session
         </button>
         <button
           type="button"
           className={view === "queues" ? "active" : ""}
-          onClick={() => setView("queues")}
+          onClick={() => navigateTo("queues")}
         >
           Queues
         </button>
         <button
           type="button"
           className={view === "settings" ? "active" : ""}
-          onClick={() => setView("settings")}
+          onClick={() => navigateTo("settings")}
         >
           Settings
         </button>
@@ -198,7 +258,7 @@ function App() {
         <JobBar
           editJobs={editJobs}
           previewJobs={previewJobs}
-          onOpenQueues={() => setView("queues")}
+          onOpenQueues={() => navigateTo("queues")}
         />
 
         {banner && (
@@ -218,10 +278,12 @@ function App() {
       </div>
 
       <main className="main">
-        {view === "library" && settings && (
+        {view === "library" && settings && libraryReady && (
           <LibraryView
+            key={libraryResetKey}
             watchDir={settings.watchDir}
             recordings={recordings}
+            libraryReady={libraryReady}
             onOpen={openRecording}
             fullScanning={fullScanning}
             folderScanningPath={folderScanningPath}
@@ -241,8 +303,8 @@ function App() {
             }}
           />
         )}
-        {view === "library" && !settings && (
-          <p className="empty-state">Loading settings…</p>
+        {view === "library" && (!settings || !libraryReady) && (
+          <p className="empty-state">Loading library…</p>
         )}
         {view === "session" && (
           <SessionView allRecordings={recordings} onOpen={openRecording} />

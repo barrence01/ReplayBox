@@ -216,7 +216,7 @@ pub(crate) fn write_cache_sidecar(
 }
 
 pub fn cancel_all_cache_jobs(state: &AppState) {
-    state.preview_queue.cancel_all();
+    let _ = state.preview_queue.cancel_all();
 }
 
 fn run_ffmpeg_cache(

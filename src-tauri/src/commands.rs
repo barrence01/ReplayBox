@@ -257,7 +257,10 @@ pub fn delete_recording(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<(), String> {
-    if let Some(job) = state.preview_queue.cancel_for_recording(&id) {
+    if let Some(job) = state
+        .preview_queue
+        .cancel_for_recording(&id, Some("Cancelled: recording deleted"))
+    {
         let _ = app.emit("preview-updated", job);
     }
 
@@ -560,6 +563,80 @@ pub fn cancel_preview_job(
     let job = state.preview_queue.cancel_job(&job_id)?;
     let _ = app.emit("preview-updated", job);
     Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_preview_for_recording(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    recording_id: String,
+) -> Result<(), String> {
+    if let Some(job) = state
+        .preview_queue
+        .cancel_for_recording(&recording_id, None)
+    {
+        let _ = app.emit("preview-updated", job);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_jobs_paused(state: State<'_, Arc<AppState>>) -> bool {
+    state.job_run_gate.jobs_paused()
+}
+
+#[tauri::command]
+pub fn set_jobs_paused(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    paused: bool,
+) -> Result<bool, String> {
+    state.set_jobs_paused(paused);
+    let _ = app.emit("jobs-paused-changed", paused);
+    Ok(paused)
+}
+
+/// Suspend job dequeue and cancel all preview jobs (close-to-tray).
+pub fn suspend_for_tray(app: &AppHandle, state: &AppState) {
+    state.set_tray_suspended(true);
+    for job in state.preview_queue.cancel_all() {
+        let _ = app.emit("preview-updated", job);
+    }
+    let _ = app.emit("app-to-tray", ());
+}
+
+/// Clear tray suspend and notify UI (show from tray).
+pub fn resume_from_tray(app: &AppHandle, state: &AppState) {
+    state.set_tray_suspended(false);
+    let _ = app.emit("app-from-tray", ());
+}
+
+/// Cancel previews and active edit jobs before process exit.
+pub fn cleanup_on_quit(app: &AppHandle, state: &AppState) {
+    for job in state.preview_queue.cancel_all() {
+        let _ = app.emit("preview-updated", job);
+    }
+    for job_id in state.edit_jobs.active_job_ids() {
+        if let Some(job) = state.edit_jobs.mark_cancelled_if_queued(&job_id) {
+            let _ = app.emit("job-updated", job);
+            continue;
+        }
+        if state.edit_jobs.is_processing(&job_id) {
+            let pid = state
+                .job_pids
+                .lock()
+                .get(&job_id)
+                .and_then(|slot| *slot.lock().unwrap());
+            if let Some(pid) = pid {
+                let _ = std::process::Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .status();
+            }
+            if let Some(job) = state.edit_jobs.mark_cancelled_processing(&job_id) {
+                let _ = app.emit("job-updated", job);
+            }
+        }
+    }
 }
 
 fn spawn_edit_worker(app: AppHandle, state: Arc<AppState>) {
