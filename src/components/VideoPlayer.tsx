@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { getPlaybackInfo } from "../lib/api";
+import { formatElapsed } from "../lib/queueHelpers";
 import type { PlaybackInfo } from "../types";
 import { isPlayInterruptedError } from "../lib/videoPlayback";
 import {
@@ -93,12 +94,22 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     const seekTimeoutRef = useRef<number | null>(null);
     const preparingPollRef = useRef<number | null>(null);
     const preparingElapsedRef = useRef<number | null>(null);
-    const preparingStartedAt = useRef<number | null>(null);
+    const preparingMetaRef = useRef<{
+      queueStatus: string | null;
+      queuedAt: string | null;
+      startedAt: string | null;
+      queuePosition: number | null;
+    }>({
+      queueStatus: null,
+      queuedAt: null,
+      startedAt: null,
+      queuePosition: null,
+    });
     const [videoSrc, setVideoSrc] = useState("");
     const [playbackMode, setPlaybackMode] = useState<string>("direct");
     const [loading, setLoading] = useState(true);
     const [preparing, setPreparing] = useState(false);
-    const [preparingElapsedSec, setPreparingElapsedSec] = useState(0);
+    const [preparingStatusText, setPreparingStatusText] = useState("");
     const [seekingUi, setSeekingUi] = useState(false);
 
     function clearLoadTimeout() {
@@ -124,8 +135,66 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         window.clearInterval(preparingElapsedRef.current);
         preparingElapsedRef.current = null;
       }
-      preparingStartedAt.current = null;
-      setPreparingElapsedSec(0);
+      preparingMetaRef.current = {
+        queueStatus: null,
+        queuedAt: null,
+        startedAt: null,
+        queuePosition: null,
+      };
+      setPreparingStatusText("");
+    }
+
+    function preparingAnchorIso(meta: {
+      queueStatus: string | null;
+      queuedAt: string | null;
+      startedAt: string | null;
+    }): string | null {
+      if (meta.queueStatus === "processing" && meta.startedAt) {
+        return meta.startedAt;
+      }
+      return meta.queuedAt ?? meta.startedAt;
+    }
+
+    function buildPreparingStatusText(
+      meta: {
+        queueStatus: string | null;
+        queuedAt: string | null;
+        startedAt: string | null;
+        queuePosition: number | null;
+      },
+      nowMs: number,
+    ): string {
+      const elapsed = formatElapsed(preparingAnchorIso(meta), nowMs);
+      if (meta.queueStatus === "queued") {
+        const pos =
+          meta.queuePosition != null ? ` · #${meta.queuePosition}` : "";
+        return `Waiting in queue${pos} (${elapsed})`;
+      }
+      return `Preparing preview… (${elapsed})`;
+    }
+
+    function refreshPreparingStatusText() {
+      setPreparingStatusText(
+        buildPreparingStatusText(preparingMetaRef.current, Date.now()),
+      );
+    }
+
+    function updatePreparingMeta(info: PlaybackInfo) {
+      preparingMetaRef.current = {
+        queueStatus: info.queueStatus ?? "processing",
+        queuedAt: info.queuedAt ?? null,
+        startedAt: info.startedAt ?? null,
+        queuePosition: info.queuePosition ?? null,
+      };
+      refreshPreparingStatusText();
+    }
+
+    function preparingTimedOut(nowMs: number): boolean {
+      const anchor = preparingAnchorIso(preparingMetaRef.current);
+      if (!anchor) return false;
+      const start = Date.parse(anchor);
+      if (Number.isNaN(start)) return false;
+      return nowMs - start > PREPARING_TIMEOUT_MS;
     }
 
     function clearPlaybackTimers() {
@@ -542,6 +611,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         setLoading(true);
         setVideoSrc("");
         onError(null);
+        updatePreparingMeta(info);
         startPreparingPoll();
         return;
       }
@@ -555,21 +625,14 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     }
 
     function startPreparingPoll() {
-      clearPreparingPoll();
-      preparingStartedAt.current = Date.now();
-      setPreparingElapsedSec(0);
+      if (preparingPollRef.current !== null) {
+        return;
+      }
       preparingElapsedRef.current = window.setInterval(() => {
-        if (preparingStartedAt.current !== null) {
-          setPreparingElapsedSec(
-            Math.floor((Date.now() - preparingStartedAt.current) / 1000),
-          );
-        }
+        refreshPreparingStatusText();
       }, PREPARING_ELAPSED_TICK_MS);
       preparingPollRef.current = window.setInterval(() => {
-        if (
-          preparingStartedAt.current !== null &&
-          Date.now() - preparingStartedAt.current > PREPARING_TIMEOUT_MS
-        ) {
+        if (preparingTimedOut(Date.now())) {
           clearPreparingPoll();
           setPreparing(false);
           setLoading(false);
@@ -585,6 +648,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         const info = await getPlaybackInfo(recordingId);
         if (info.mode !== "preparing") {
           applyPlaybackInfo(info);
+        } else {
+          updatePreparingMeta(info);
         }
       } catch (e) {
         clearPreparingPoll();
@@ -841,9 +906,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           <p className="video-player__status muted">Loading video…</p>
         )}
         {preparing && (
-          <p className="video-player__status muted">
-            Preparing preview… ({preparingElapsedSec}s)
-          </p>
+          <p className="video-player__status muted">{preparingStatusText}</p>
         )}
         {seekingUi && !loading && !preparing && (
           <div className="video-player__seek-overlay" aria-live="polite">

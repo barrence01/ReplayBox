@@ -3,11 +3,13 @@ mod commands;
 mod db;
 mod disk_space;
 mod ffmpeg;
+mod job_queue;
 mod logging;
 mod media_server;
 mod models;
 mod playback;
 mod playback_cache;
+mod preview_queue;
 mod settings;
 mod state;
 mod tools;
@@ -149,7 +151,14 @@ pub fn run() {
             commands::resolved_tool_paths,
             commands::get_playback_info,
             commands::get_job_status,
+            commands::list_jobs,
+            commands::list_preview_jobs,
+            commands::dismiss_job,
+            commands::dismiss_preview_job,
+            commands::clear_finished_jobs,
+            commands::clear_finished_preview_jobs,
             commands::cancel_job,
+            commands::cancel_preview_job,
             commands::start_trim,
             commands::start_compress,
         ])

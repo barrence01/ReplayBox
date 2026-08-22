@@ -1,11 +1,9 @@
 use crate::logging::{append_ffmpeg_log_bytes, flush_ffmpeg_log};
-use crate::models::Recording;
 use crate::playback::PlaybackStrategy;
 use crate::settings::Settings;
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -13,12 +11,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-const MAX_ATTEMPTS_PER_STRATEGY: u8 = 1;
-const JOB_STALE_TIMEOUT: Duration = Duration::from_secs(180);
-const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 /// Shorter GOP (~250ms @ 60fps) for scrub-friendly transcode previews.
 const SCRUB_PREVIEW_GOP: &str = "15";
 
@@ -46,28 +41,7 @@ struct CacheSidecar {
     created_at: String,
 }
 
-#[derive(Debug, Clone)]
-pub enum CacheJobStatus {
-    Preparing,
-    Ready { path: PathBuf },
-    Failed { message: String },
-}
-
-pub(crate) struct CacheJobEntry {
-    strategy: PlaybackStrategy,
-    status: CacheJobStatus,
-    attempts: u8,
-    started_at: Instant,
-    failed_at: Option<Instant>,
-    cancel: Arc<AtomicBool>,
-    child: Arc<Mutex<Option<Child>>>,
-}
-
-pub type PlaybackCacheJobs = Arc<Mutex<HashMap<String, CacheJobEntry>>>;
-
-pub fn new_playback_cache_jobs() -> PlaybackCacheJobs {
-    Arc::new(Mutex::new(HashMap::new()))
-}
+pub use crate::preview_queue::CacheJobStatus;
 
 pub fn cache_file_path(cache_dir: &Path, recording_id: &str) -> PathBuf {
     cache_dir.join(format!("{recording_id}.mp4"))
@@ -116,10 +90,6 @@ fn sidecar_strategy_rank(name: &str) -> u8 {
         "remux" => 1,
         _ => 0,
     }
-}
-
-fn failure_cooldown_elapsed(failed_at: Option<Instant>) -> bool {
-    failed_at.is_some_and(|t| t.elapsed() >= FAILURE_COOLDOWN)
 }
 
 pub fn source_metadata(path: &Path) -> Result<(u64, u64), String> {
@@ -213,6 +183,40 @@ fn kill_child(child_slot: &Arc<Mutex<Option<Child>>>) {
             let _ = child.wait();
         }
     }
+}
+
+pub(crate) fn run_ffmpeg_cache_job(
+    ffmpeg: &str,
+    input: &Path,
+    output: &Path,
+    strategy: PlaybackStrategy,
+    audio_codec: Option<&str>,
+    cancel: &AtomicBool,
+    child_slot: &Arc<Mutex<Option<Child>>>,
+) -> Result<(), String> {
+    run_ffmpeg_cache(
+        ffmpeg,
+        input,
+        output,
+        strategy,
+        audio_codec,
+        cancel,
+        child_slot,
+    )
+}
+
+pub(crate) fn write_cache_sidecar(
+    cache_dir: &Path,
+    recording_id: &str,
+    mtime: u64,
+    size: u64,
+    strategy: PlaybackStrategy,
+) -> Result<(), String> {
+    write_sidecar(cache_dir, recording_id, mtime, size, strategy)
+}
+
+pub fn cancel_all_cache_jobs(state: &AppState) {
+    state.preview_queue.cancel_all();
 }
 
 fn run_ffmpeg_cache(
@@ -334,193 +338,6 @@ fn run_ffmpeg_cache(
     }
     fs::rename(&tmp, output).map_err(|e| format!("cache rename failed: {e}"))?;
     Ok(())
-}
-
-fn mark_entry_failed(entry: &mut CacheJobEntry, message: String) -> CacheJobStatus {
-    cancel_job_entry(entry);
-    entry.failed_at = Some(Instant::now());
-    entry.status = CacheJobStatus::Failed {
-        message: message.clone(),
-    };
-    CacheJobStatus::Failed { message }
-}
-
-fn resolve_existing_job(
-    entry: &mut CacheJobEntry,
-    strategy: PlaybackStrategy,
-) -> Option<CacheJobStatus> {
-    match &entry.status {
-        CacheJobStatus::Ready { path } => Some(CacheJobStatus::Ready { path: path.clone() }),
-        CacheJobStatus::Preparing if entry.strategy == strategy => {
-            if entry.started_at.elapsed() > JOB_STALE_TIMEOUT {
-                Some(mark_entry_failed(
-                    entry,
-                    "Preview preparation timed out".into(),
-                ))
-            } else {
-                Some(CacheJobStatus::Preparing)
-            }
-        }
-        CacheJobStatus::Failed { message } if entry.strategy == strategy => {
-            if failure_cooldown_elapsed(entry.failed_at) {
-                None
-            } else {
-                Some(CacheJobStatus::Failed {
-                    message: message.clone(),
-                })
-            }
-        }
-        CacheJobStatus::Failed { .. } | CacheJobStatus::Preparing => {
-            if strategy_rank(strategy) > strategy_rank(entry.strategy) {
-                None
-            } else if let CacheJobStatus::Failed { message } = &entry.status {
-                Some(CacheJobStatus::Failed {
-                    message: message.clone(),
-                })
-            } else {
-                Some(CacheJobStatus::Preparing)
-            }
-        }
-    }
-}
-
-pub fn ensure_cache_job(
-    state: &AppState,
-    recording: &Recording,
-    strategy: PlaybackStrategy,
-) -> CacheJobStatus {
-    if strategy == PlaybackStrategy::Direct {
-        return CacheJobStatus::Failed {
-            message: "direct strategy does not use cache".into(),
-        };
-    }
-
-    if state.settings.lock().playback_cache_max_gb == 0 {
-        return CacheJobStatus::Failed {
-            message: "Preview cache is disabled due to insufficient disk space.".into(),
-        };
-    }
-
-    let cache_dir = state.paths.playback_cache_dir();
-    let source = Path::new(&recording.path);
-
-    if let Some(path) = is_cache_valid(&cache_dir, &recording.id, source, strategy) {
-        return CacheJobStatus::Ready { path };
-    }
-
-    let mut jobs = state.playback_cache_jobs.lock().expect("playback cache jobs lock");
-    if let Some(entry) = jobs.get_mut(&recording.id) {
-        match resolve_existing_job(entry, strategy) {
-            Some(status) => return status,
-            None => {
-                cancel_job_entry(entry);
-                jobs.remove(&recording.id);
-            }
-        }
-    }
-
-    let cancel = Arc::new(AtomicBool::new(false));
-    let child_slot = Arc::new(Mutex::new(None));
-    jobs.insert(
-        recording.id.clone(),
-        CacheJobEntry {
-            strategy,
-            status: CacheJobStatus::Preparing,
-            attempts: 1,
-            started_at: Instant::now(),
-            failed_at: None,
-            cancel: cancel.clone(),
-            child: child_slot.clone(),
-        },
-    );
-    drop(jobs);
-
-    let recording_id = recording.id.clone();
-    let recording_path = recording.path.clone();
-    let audio_codec = recording.audio_codec.clone();
-    let ffmpeg = state.ffmpeg_bin();
-    let jobs_handle = state.playback_cache_jobs.clone();
-    let paths = state.paths.clone();
-    let cleanup_policy = CleanupPolicy::from_settings(&state.settings.lock());
-    let output_path = cache_file_path(&cache_dir, &recording_id);
-
-    tracing::info!(
-        recording_id = %recording_id,
-        strategy = ?strategy,
-        attempt = 1,
-        max_attempts = MAX_ATTEMPTS_PER_STRATEGY,
-        input = %recording_path,
-        output = %output_path.display(),
-        "playback cache job started"
-    );
-
-    let job_started = Instant::now();
-    thread::spawn(move || {
-        let cache_dir = paths.playback_cache_dir();
-        let output = cache_file_path(&cache_dir, &recording_id);
-        let input = PathBuf::from(&recording_path);
-
-        let result = run_ffmpeg_cache(
-            &ffmpeg,
-            &input,
-            &output,
-            strategy,
-            audio_codec.as_deref(),
-            &cancel,
-            &child_slot,
-        );
-
-        let mut jobs = jobs_handle.lock().expect("playback cache jobs lock");
-        let Some(entry) = jobs.get_mut(&recording_id) else {
-            return;
-        };
-
-        let elapsed_ms = job_started.elapsed().as_millis();
-        entry.status = match result {
-            Ok(()) => {
-                tracing::info!(
-                    recording_id = %recording_id,
-                    duration_ms = elapsed_ms,
-                    "playback cache job ready"
-                );
-                if let Ok((mtime, size)) = source_metadata(&input) {
-                    let _ = write_sidecar(&cache_dir, &recording_id, mtime, size, strategy);
-                }
-                run_cache_cleanup(&cache_dir, &cleanup_policy);
-                CacheJobStatus::Ready { path: output }
-            }
-            Err(e) => {
-                tracing::error!(
-                    recording_id = %recording_id,
-                    strategy = ?strategy,
-                    duration_ms = elapsed_ms,
-                    attempt = entry.attempts,
-                    error = %e,
-                    "playback cache job failed; see ffmpeg.log for stderr"
-                );
-                let _ = fs::remove_file(&output);
-                let _ = fs::remove_file(cache_temp_path(&output));
-                let _ = fs::remove_file(sidecar_path(&cache_dir, &recording_id));
-                entry.failed_at = Some(Instant::now());
-                CacheJobStatus::Failed { message: e }
-            }
-        };
-    });
-
-    CacheJobStatus::Preparing
-}
-
-fn cancel_job_entry(entry: &CacheJobEntry) {
-    entry.cancel.store(true, Ordering::Relaxed);
-    kill_child(&entry.child);
-}
-
-pub fn cancel_all_cache_jobs(jobs: &PlaybackCacheJobs) {
-    let mut guard = jobs.lock().expect("playback cache jobs lock");
-    for (_, entry) in guard.iter() {
-        cancel_job_entry(entry);
-    }
-    guard.clear();
 }
 
 fn is_cache_storage_file(path: &Path) -> bool {
@@ -705,54 +522,6 @@ mod tests {
         assert!(audio_copy_compatible(Some("aac")));
         assert!(audio_copy_compatible(Some("MP3")));
         assert!(!audio_copy_compatible(Some("opus")));
-    }
-
-    #[test]
-    fn failed_sticky_without_cooldown() {
-        let mut entry = CacheJobEntry {
-            strategy: PlaybackStrategy::RemuxAudio,
-            status: CacheJobStatus::Failed {
-                message: "boom".into(),
-            },
-            attempts: 1,
-            started_at: Instant::now(),
-            failed_at: Some(Instant::now()),
-            cancel: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-        };
-        let resolved = resolve_existing_job(&mut entry, PlaybackStrategy::RemuxAudio);
-        assert!(matches!(resolved, Some(CacheJobStatus::Failed { .. })));
-    }
-
-    #[test]
-    fn failed_allows_retry_after_cooldown() {
-        let mut entry = CacheJobEntry {
-            strategy: PlaybackStrategy::RemuxAudio,
-            status: CacheJobStatus::Failed {
-                message: "boom".into(),
-            },
-            attempts: 1,
-            started_at: Instant::now(),
-            failed_at: Some(Instant::now() - FAILURE_COOLDOWN - Duration::from_secs(1)),
-            cancel: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-        };
-        assert!(resolve_existing_job(&mut entry, PlaybackStrategy::RemuxAudio).is_none());
-    }
-
-    #[test]
-    fn preparing_stale_becomes_failed() {
-        let mut entry = CacheJobEntry {
-            strategy: PlaybackStrategy::RemuxAudio,
-            status: CacheJobStatus::Preparing,
-            attempts: 1,
-            started_at: Instant::now() - JOB_STALE_TIMEOUT - Duration::from_secs(1),
-            failed_at: None,
-            cancel: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-        };
-        let resolved = resolve_existing_job(&mut entry, PlaybackStrategy::RemuxAudio);
-        assert!(matches!(resolved, Some(CacheJobStatus::Failed { .. })));
     }
 
     #[test]

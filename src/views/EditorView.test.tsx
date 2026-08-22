@@ -5,9 +5,10 @@ import {
   type ForwardedRef,
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Recording } from "../types";
+import type { JobStatus, Recording } from "../types";
 import type { VideoPlayerHandle } from "../components/VideoPlayer";
 import { EditorView } from "./EditorView";
+import * as api from "../lib/api";
 
 const playerSpies = {
   seekAndLock: vi.fn(),
@@ -97,7 +98,7 @@ function renderEditor(overrides: Partial<Parameters<typeof EditorView>[0]> = {})
       recording={recording}
       folderRecordings={[]}
       preferNvenc={false}
-      jobRunning={false}
+      editJobs={[]}
       onBack={() => undefined}
       onOpen={() => undefined}
       onDeleted={() => undefined}
@@ -272,5 +273,61 @@ describe("EditorView timeline wiring", () => {
 
     expect(playerSpies.play).not.toHaveBeenCalled();
     expect(playerSpies.pause).not.toHaveBeenCalled();
+  });
+
+  it("disables trim/compress and shows status when recording has active job", () => {
+    const activeJob: JobStatus = {
+      id: "job-1",
+      kind: "compress",
+      status: "processing",
+      progress: 0.4,
+      message: null,
+      outputPath: "/recordings/clip_compressed.mp4",
+      sourcePath: recording.path,
+      sourceFilename: recording.filename,
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: "2024-01-01T00:00:10.000Z",
+      finishedAt: null,
+    };
+
+    renderEditor({ editJobs: [activeJob] });
+
+    const workingButtons = screen.getAllByRole("button", {
+      name: /Working/,
+    }) as HTMLButtonElement[];
+    expect(workingButtons).toHaveLength(2);
+    expect(workingButtons.every((b) => b.disabled)).toBe(true);
+    expect(screen.getByText(/Compress processing/)).toBeTruthy();
+  });
+
+  it("enqueues compress when recording has no active job", async () => {
+    const onJobStarted = vi.fn();
+    vi.mocked(api.resolveCopyPath).mockResolvedValue({
+      path: "/recordings/clip_compressed.mp4",
+      filename: "clip_compressed.mp4",
+      exists: false,
+    });
+    vi.mocked(api.startCompress).mockResolvedValue({
+      id: "job-2",
+      kind: "compress",
+      status: "queued",
+      progress: 0,
+      message: null,
+      outputPath: "/recordings/clip_compressed.mp4",
+      sourcePath: recording.path,
+      sourceFilename: recording.filename,
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    renderEditor({ onJobStarted });
+
+    fireEvent.click(screen.getByRole("button", { name: "Compress" }));
+
+    await vi.waitFor(() => {
+      expect(api.startCompress).toHaveBeenCalled();
+    });
+    expect(onJobStarted).toHaveBeenCalled();
   });
 });

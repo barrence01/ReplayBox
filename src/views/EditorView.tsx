@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import type { JobStatus, Recording } from "../types";
 import {
@@ -10,6 +10,11 @@ import {
   recordingFileExists,
   resolveCopyPath,
 } from "../lib/api";
+import {
+  formatJobElapsed,
+  isActiveJob,
+  queuePosition,
+} from "../lib/queueHelpers";
 import { Timeline } from "../components/Timeline";
 import { ConflictModal } from "../components/ConflictModal";
 import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
@@ -30,7 +35,7 @@ interface Props {
   recording: Recording;
   folderRecordings: Recording[];
   preferNvenc: boolean;
-  jobRunning: boolean;
+  editJobs: JobStatus[];
   onBack: () => void;
   onOpen: (recording: Recording) => void;
   onDeleted: () => void;
@@ -42,7 +47,7 @@ export function EditorView({
   recording,
   folderRecordings,
   preferNvenc,
-  jobRunning,
+  editJobs,
   onBack,
   onOpen,
   onDeleted,
@@ -69,9 +74,39 @@ export function EditorView({
   const [timelineLocked, setTimelineLocked] = useState(false);
   const [draftStartMs, setDraftStartMs] = useState<number | null>(null);
   const [draftEndMs, setDraftEndMs] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const timelineStartMs = draftStartMs ?? startMs;
   const timelineEndMs = draftEndMs ?? endMs;
+
+  const activeEditJob = useMemo(
+    () =>
+      editJobs.find(
+        (j) => isActiveJob(j.status) && j.sourcePath === recording.path,
+      ) ?? null,
+    [editJobs, recording.path],
+  );
+  const editBusy = activeEditJob != null;
+  const editQueuePos =
+    activeEditJob?.status === "queued"
+      ? queuePosition(editJobs, activeEditJob.id)
+      : null;
+  const editStatusHint = (() => {
+    if (!activeEditJob) return null;
+    const kind = activeEditJob.kind === "compress" ? "Compress" : "Trim";
+    const elapsed = formatJobElapsed(activeEditJob, nowMs);
+    if (activeEditJob.status === "queued") {
+      const pos = editQueuePos != null ? ` · #${editQueuePos}` : "";
+      return `${kind} queued${pos} (${elapsed})`;
+    }
+    return `${kind} processing (${elapsed})`;
+  })();
+
+  useEffect(() => {
+    if (!editBusy) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [editBusy]);
 
   useEffect(() => {
     const initialDuration = catalogDurationMs || 1;
@@ -378,21 +413,24 @@ export function EditorView({
               type="button"
               className="editor__action"
               onClick={runTrim}
-              disabled={jobRunning}
+              disabled={editBusy}
             >
               <ScissorsIcon />
-              <span>{jobRunning ? "Working…" : "Trim"}</span>
+              <span>{editBusy ? "Working…" : "Trim"}</span>
             </button>
             <button
               type="button"
               className="editor__action editor__action--secondary"
               onClick={runCompress}
-              disabled={jobRunning}
+              disabled={editBusy}
             >
               <CompressIcon />
-              <span>{jobRunning ? "Working…" : "Compress"}</span>
+              <span>{editBusy ? "Working…" : "Compress"}</span>
             </button>
           </div>
+          {editStatusHint && (
+            <p className="muted editor__job-status">{editStatusHint}</p>
+          )}
 
           <div className="editor__output">
             <fieldset className="radio-group">
@@ -510,7 +548,7 @@ export function EditorView({
               type="button"
               className="btn-danger"
               onClick={() => setConfirmDelete(true)}
-              disabled={deleting || jobRunning}
+              disabled={deleting}
             >
               Delete video
             </button>

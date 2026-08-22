@@ -225,6 +225,140 @@ select {
   animation: job-indeterminate 1.2s ease-in-out infinite;
 }
 
+.job-bar--summary {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  font: inherit;
+  color: inherit;
+}
+
+.job-bar--summary:hover {
+  background: var(--bg-soft);
+}
+
+.queues-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  padding: 1.25rem 1.5rem 2rem;
+  max-width: 56rem;
+}
+
+.queues-view__header h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.45rem;
+}
+
+.queue-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.queue-section__header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.queue-subsection {
+  margin-top: 0.85rem;
+}
+
+.queue-subsection__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.queue-subsection__title {
+  margin: 0 0 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.queue-subsection__header .queue-subsection__title {
+  margin-bottom: 0;
+}
+
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.queue-row {
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-row:last-child {
+  border-bottom: none;
+}
+
+.queue-row__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.85rem;
+}
+
+.queue-row__kind {
+  text-transform: capitalize;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.queue-row__file {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(40vw, 18rem);
+}
+
+.queue-row__status,
+.queue-row__time {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.queue-row__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.queue-row__track {
+  margin-top: 0.45rem;
+  height: 4px;
+  background: var(--bg-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.queue-row__track > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease-out;
+}
+
+.queue-row__track--indeterminate > div {
+  width: 35%;
+  animation: job-indeterminate 1.2s ease-in-out infinite;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -777,6 +911,11 @@ select {
   flex-wrap: wrap;
   gap: 0.6rem;
   margin-top: 1rem;
+}
+
+.editor__job-status {
+  margin: 0.55rem 0 0;
+  font-size: 0.85rem;
 }
 
 .editor__action {

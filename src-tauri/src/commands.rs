@@ -170,14 +170,14 @@ pub fn get_playback_cache_stats(state: State<'_, Arc<AppState>>) -> Result<Playb
 
 #[tauri::command]
 pub fn clear_playback_cache(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheClearResult, String> {
-    playback_cache::cancel_all_cache_jobs(&state.playback_cache_jobs);
+    playback_cache::cancel_all_cache_jobs(&state);
     let freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
     Ok(PlaybackCacheClearResult { freed_bytes: freed })
 }
 
 #[tauri::command]
 pub fn clear_all_cache(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheClearResult, String> {
-    playback_cache::cancel_all_cache_jobs(&state.playback_cache_jobs);
+    playback_cache::cancel_all_cache_jobs(&state);
     let mut freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
     freed += playback_cache::clear_thumbnails_dir(&state.paths.thumbs_dir())?;
     db::clear_all_thumbnail_paths(&state.db.lock())?;
@@ -352,15 +352,73 @@ pub fn resolved_tool_paths(state: State<'_, Arc<AppState>>) -> (String, String) 
 
 #[tauri::command]
 pub fn get_playback_info(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     recording_id: String,
     force_fallback: Option<bool>,
     fallback_level: Option<u8>,
 ) -> Result<PlaybackInfo, String> {
-    resolve_playback_info(state.inner(), &recording_id, force_fallback, fallback_level)
+    crate::preview_queue::spawn_preview_worker(app.clone(), state.inner().clone());
+    resolve_playback_info(
+        &app,
+        state.inner(),
+        &recording_id,
+        force_fallback,
+        fallback_level,
+    )
+}
+
+fn playback_info_direct(url: String) -> PlaybackInfo {
+    PlaybackInfo {
+        url,
+        mode: "direct".into(),
+        queue_status: None,
+        queued_at: None,
+        started_at: None,
+        queue_position: None,
+    }
+}
+
+fn playback_info_cache(url: String) -> PlaybackInfo {
+    PlaybackInfo {
+        url,
+        mode: "cache".into(),
+        queue_status: None,
+        queued_at: None,
+        started_at: None,
+        queue_position: None,
+    }
+}
+
+fn playback_info_preparing(
+    state: &AppState,
+    recording_id: &str,
+) -> PlaybackInfo {
+    let (queue_status, queued_at, started_at, queue_position) = state
+        .preview_queue
+        .lookup_by_recording(recording_id)
+        .map(|(job, position)| {
+            (
+                Some(job.status),
+                Some(job.queued_at),
+                job.started_at,
+                position,
+            )
+        })
+        .unwrap_or((Some("queued".into()), None, None, None));
+
+    PlaybackInfo {
+        url: String::new(),
+        mode: "preparing".into(),
+        queue_status,
+        queued_at,
+        started_at,
+        queue_position,
+    }
 }
 
 fn resolve_playback_info(
+    app: &AppHandle,
     state: &AppState,
     recording_id: &str,
     force_fallback: Option<bool>,
@@ -386,42 +444,36 @@ fn resolve_playback_info(
             playback_cache::is_cache_valid(&cache_dir, &recording.id, source, strategy)
         {
             let path = cached.to_string_lossy().to_string();
-            return Ok(PlaybackInfo {
-                url: playback::build_media_url(&base_url, &path),
-                mode: "cache".into(),
-            });
+            return Ok(playback_info_cache(playback::build_media_url(
+                &base_url, &path,
+            )));
         }
 
-        match playback_cache::ensure_cache_job(state, &recording, strategy) {
+        match state.preview_queue.ensure_cache_job(state, &recording, strategy, |job| {
+            let _ = app.emit("preview-updated", job);
+        }) {
             CacheJobStatus::Ready { path } => {
                 let path_str = path.to_string_lossy().to_string();
-                return Ok(PlaybackInfo {
-                    url: playback::build_media_url(&base_url, &path_str),
-                    mode: "cache".into(),
-                });
+                return Ok(playback_info_cache(playback::build_media_url(
+                    &base_url, &path_str,
+                )));
             }
             CacheJobStatus::Preparing => {
-                return Ok(PlaybackInfo {
-                    url: String::new(),
-                    mode: "preparing".into(),
-                });
+                return Ok(playback_info_preparing(state, &recording.id));
             }
             CacheJobStatus::Failed { message } => {
-                if strategy == PlaybackStrategy::RemuxAudio
-                    && level < 2
-                    && !force
-                {
-                    return resolve_playback_info(state, recording_id, Some(true), Some(2));
+                if strategy == PlaybackStrategy::RemuxAudio && level < 2 && !force {
+                    return resolve_playback_info(app, state, recording_id, Some(true), Some(2));
                 }
                 return Err(format!("Preview preparation failed: {message}"));
             }
         }
     }
 
-    Ok(PlaybackInfo {
-        url: playback::build_media_url(&base_url, &recording.path),
-        mode: "direct".into(),
-    })
+    Ok(playback_info_direct(playback::build_media_url(
+        &base_url,
+        &recording.path,
+    )))
 }
 
 #[tauri::command]
@@ -429,29 +481,144 @@ pub fn get_job_status(
     state: State<'_, Arc<AppState>>,
     job_id: String,
 ) -> Option<JobStatus> {
-    state.jobs.lock().get(&job_id).cloned()
+    state.edit_jobs.get(&job_id)
 }
 
 #[tauri::command]
-pub fn cancel_job(state: State<'_, Arc<AppState>>, job_id: String) -> Result<(), String> {
-    let pid = state
-        .job_pids
-        .lock()
-        .get(&job_id)
-        .and_then(|slot| *slot.lock().unwrap());
+pub fn list_jobs(state: State<'_, Arc<AppState>>) -> Vec<JobStatus> {
+    state.edit_jobs.list()
+}
 
-    if let Some(pid) = pid {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .status();
-        if let Some(job) = state.jobs.lock().get_mut(&job_id) {
-            job.status = "cancelled".into();
-            job.message = Some("Cancelled by user".into());
-        }
-        Ok(())
-    } else {
-        Err("No running process for this job".into())
+#[tauri::command]
+pub fn list_preview_jobs(state: State<'_, Arc<AppState>>) -> Vec<JobStatus> {
+    state.preview_queue.list()
+}
+
+#[tauri::command]
+pub fn dismiss_job(state: State<'_, Arc<AppState>>, job_id: String) -> Result<(), String> {
+    state.edit_jobs.dismiss(&job_id)
+}
+
+#[tauri::command]
+pub fn dismiss_preview_job(state: State<'_, Arc<AppState>>, job_id: String) -> Result<(), String> {
+    state.preview_queue.dismiss(&job_id)
+}
+
+#[tauri::command]
+pub fn clear_finished_jobs(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.edit_jobs.clear_finished();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_finished_preview_jobs(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.preview_queue.clear_finished();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_job(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    job_id: String,
+) -> Result<(), String> {
+    if let Some(job) = state.edit_jobs.mark_cancelled_if_queued(&job_id) {
+        let _ = app.emit("job-updated", job);
+        return Ok(());
     }
+
+    if state.edit_jobs.is_processing(&job_id) {
+        let pid = state
+            .job_pids
+            .lock()
+            .get(&job_id)
+            .and_then(|slot| *slot.lock().unwrap());
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+        }
+        if let Some(job) = state.edit_jobs.mark_cancelled_processing(&job_id) {
+            let _ = app.emit("job-updated", job);
+        }
+        return Ok(());
+    }
+
+    Err("Job not found or not cancellable".into())
+}
+
+#[tauri::command]
+pub fn cancel_preview_job(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    job_id: String,
+) -> Result<(), String> {
+    let job = state.preview_queue.cancel_job(&job_id)?;
+    let _ = app.emit("preview-updated", job);
+    Ok(())
+}
+
+fn spawn_edit_worker(app: AppHandle, state: Arc<AppState>) {
+    state.edit_jobs.ensure_worker_started(|| {
+        let app = app.clone();
+        let state = state.clone();
+        thread::spawn(move || loop {
+            let (job_id, payload) = state.edit_jobs.take_next_work();
+            if let Some(job) = state.edit_jobs.snapshot_job(&job_id) {
+                let _ = app.emit("job-updated", job);
+            }
+
+            let child_slot = Arc::new(Mutex::new(None));
+            state
+                .job_pids
+                .lock()
+                .insert(job_id.clone(), child_slot.clone());
+            let on_progress = make_progress_emitter(app.clone(), state.clone(), job_id.clone());
+
+            let (result, original_path) = match payload {
+                crate::job_queue::PendingEditJob::Trim {
+                    settings,
+                    recording,
+                    request,
+                    dest,
+                } => {
+                    let original = recording.path.clone();
+                    (
+                        run_trim(
+                            &settings,
+                            &recording,
+                            &request,
+                            &dest,
+                            Some(child_slot),
+                            Some(on_progress),
+                        ),
+                        original,
+                    )
+                }
+                crate::job_queue::PendingEditJob::Compress {
+                    settings,
+                    recording,
+                    request,
+                    dest,
+                } => {
+                    let original = recording.path.clone();
+                    (
+                        run_compress(
+                            &settings,
+                            &recording,
+                            &request,
+                            &dest,
+                            Some(child_slot),
+                            Some(on_progress),
+                        ),
+                        original,
+                    )
+                }
+            };
+
+            finalize_job(&app, &state, &job_id, result, &original_path);
+        });
+    });
 }
 
 #[tauri::command]
@@ -495,33 +662,27 @@ pub fn start_trim(
     let job = JobStatus {
         id: job_id.clone(),
         kind: "trim".into(),
-        status: "running".into(),
+        status: "queued".into(),
         progress: 0.0,
         message: Some(format!("Trim ({})", request.mode)),
         output_path: Some(dest.to_string_lossy().to_string()),
+        source_path: Some(recording.path.clone()),
+        source_filename: Some(recording.filename.clone()),
+        queued_at: crate::job_queue::now_rfc3339(),
+        started_at: None,
+        finished_at: None,
     };
-    state.jobs.lock().insert(job_id.clone(), job.clone());
 
-    let child_slot = Arc::new(Mutex::new(None));
-    state
-        .job_pids
-        .lock()
-        .insert(job_id.clone(), child_slot.clone());
+    let payload = crate::job_queue::PendingEditJob::Trim {
+        settings,
+        recording,
+        request,
+        dest,
+    };
 
-    let state_arc = state.inner().clone();
-    let on_progress = make_progress_emitter(app.clone(), state_arc.clone(), job_id.clone());
-    thread::spawn(move || {
-        let result = run_trim(
-            &settings,
-            &recording,
-            &request,
-            &dest,
-            Some(child_slot),
-            Some(on_progress),
-        );
-        finalize_job(&app, &state_arc, &job_id, result, &recording.path);
-    });
-
+    spawn_edit_worker(app.clone(), state.inner().clone());
+    let job = state.edit_jobs.enqueue(job, payload);
+    let _ = app.emit("job-updated", job.clone());
     Ok(job)
 }
 
@@ -562,33 +723,27 @@ pub fn start_compress(
     let job = JobStatus {
         id: job_id.clone(),
         kind: "compress".into(),
-        status: "running".into(),
+        status: "queued".into(),
         progress: 0.0,
         message: Some("Compressing".into()),
         output_path: Some(dest.to_string_lossy().to_string()),
+        source_path: Some(recording.path.clone()),
+        source_filename: Some(recording.filename.clone()),
+        queued_at: crate::job_queue::now_rfc3339(),
+        started_at: None,
+        finished_at: None,
     };
-    state.jobs.lock().insert(job_id.clone(), job.clone());
 
-    let child_slot = Arc::new(Mutex::new(None));
-    state
-        .job_pids
-        .lock()
-        .insert(job_id.clone(), child_slot.clone());
+    let payload = crate::job_queue::PendingEditJob::Compress {
+        settings,
+        recording,
+        request,
+        dest,
+    };
 
-    let state_arc = state.inner().clone();
-    let on_progress = make_progress_emitter(app.clone(), state_arc.clone(), job_id.clone());
-    thread::spawn(move || {
-        let result = run_compress(
-            &settings,
-            &recording,
-            &request,
-            &dest,
-            Some(child_slot),
-            Some(on_progress),
-        );
-        finalize_job(&app, &state_arc, &job_id, result, &recording.path);
-    });
-
+    spawn_edit_worker(app.clone(), state.inner().clone());
+    let job = state.edit_jobs.enqueue(job, payload);
+    let _ = app.emit("job-updated", job.clone());
     Ok(job)
 }
 
@@ -598,13 +753,8 @@ fn make_progress_emitter(
     job_id: String,
 ) -> ffmpeg::ProgressFn {
     Arc::new(move |fraction: f64| {
-        let mut jobs = state.jobs.lock();
-        if let Some(job) = jobs.get_mut(&job_id) {
-            if job.status != "running" {
-                return;
-            }
-            job.progress = fraction;
-            let _ = app.emit("job-progress", job.clone());
+        if let Some(job) = state.edit_jobs.update_progress(&job_id, fraction) {
+            let _ = app.emit("job-updated", job);
         }
     })
 }
@@ -718,38 +868,48 @@ fn finalize_job(
 ) {
     state.job_pids.lock().remove(job_id);
 
-    let mut jobs = state.jobs.lock();
-    if let Some(job) = jobs.get_mut(job_id) {
-        if job.status == "cancelled" {
-            let _ = app.emit("job-progress", job.clone());
-            return;
+    let current = state.edit_jobs.snapshot_job(job_id);
+    if current.as_ref().is_some_and(|j| j.status == "cancelled") {
+        if let Some(job) = state.edit_jobs.finish_job(
+            job_id,
+            "cancelled",
+            Some("Cancelled by user".into()),
+            None,
+            None,
+        ) {
+            let _ = app.emit("job-updated", job);
         }
-        match result {
-            Ok(path) => {
-                job.status = "done".into();
-                job.progress = 1.0;
-                job.output_path = Some(path.to_string_lossy().to_string());
-                job.message = Some("Completed".into());
+        return;
+    }
 
-                let mut settings = state.settings.lock().clone();
-                settings.ffmpeg_path = state.ffmpeg_bin();
-                settings.ffprobe_path = state.ffprobe_bin();
-                let conn = state.db.lock();
+    let job = match result {
+        Ok(path) => {
+            let mut settings = state.settings.lock().clone();
+            settings.ffmpeg_path = state.ffmpeg_bin();
+            settings.ffprobe_path = state.ffprobe_bin();
+            let conn = state.db.lock();
 
-                if path.to_string_lossy() != original_path
-                    && !Path::new(original_path).exists()
-                {
-                    let _ = db::delete_recording_by_path(&conn, original_path);
-                }
-
-                let _ = catalog::index_file(&conn, &settings, &state.paths, &path);
+            if path.to_string_lossy() != original_path && !Path::new(original_path).exists() {
+                let _ = db::delete_recording_by_path(&conn, original_path);
             }
-            Err(e) => {
-                job.status = "error".into();
-                job.message = Some(e);
-            }
+
+            let _ = catalog::index_file(&conn, &settings, &state.paths, &path);
+
+            state.edit_jobs.finish_job(
+                job_id,
+                "completed",
+                Some("Completed".into()),
+                Some(path.to_string_lossy().to_string()),
+                Some(1.0),
+            )
         }
-        let _ = app.emit("job-progress", job.clone());
+        Err(e) => state
+            .edit_jobs
+            .finish_job(job_id, "failed", Some(e), None, None),
+    };
+
+    if let Some(job) = job {
+        let _ = app.emit("job-updated", job);
         let _ = app.emit("catalog-updated", ());
     }
 }

@@ -1,6 +1,10 @@
 export interface PlaybackInfo {
   url: string;
   mode: "direct" | "cache" | "preparing";
+  queueStatus?: "queued" | "processing" | string | null;
+  queuedAt?: string | null;
+  startedAt?: string | null;
+  queuePosition?: number | null;
 }
 
 export interface Recording {
@@ -58,11 +62,16 @@ export interface CopyPathInfo {
 
 export interface JobStatus {
   id: string;
-  kind: string;
-  status: string;
+  kind: "trim" | "compress" | "preview" | string;
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled" | string;
   progress: number;
   message: string | null;
   outputPath: string | null;
+  sourcePath: string | null;
+  sourceFilename: string | null;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
 }
 
 export interface CatalogScanStarted {
@@ -78,4 +87,4 @@ export interface CatalogScanFinished {
   message?: string;
 }
 
-export type ViewId = "library" | "session" | "editor" | "settings";
+export type ViewId = "library" | "session" | "editor" | "settings" | "queues";

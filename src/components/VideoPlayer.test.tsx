@@ -212,11 +212,15 @@ describe("VideoPlayer", () => {
     expect(getPlaybackInfoMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("shows elapsed seconds while preparing", async () => {
+  it("shows elapsed from backend startedAt while preparing", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
     getPlaybackInfoMock.mockResolvedValue({
       url: "",
       mode: "preparing",
+      queueStatus: "processing",
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: "2024-01-01T00:00:00.000Z",
     });
 
     const { container } = render(
@@ -231,14 +235,41 @@ describe("VideoPlayer", () => {
     );
 
     await waitFor(() => {
-      expect(container.textContent).toContain("Preparing preview… (0s)");
+      expect(container.textContent).toContain("Preparing preview… (00:00)");
     });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
 
-    expect(container.textContent).toContain("Preparing preview… (3s)");
+    expect(container.textContent).toContain("Preparing preview… (00:03)");
+  });
+
+  it("shows waiting in queue status with position", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:01:00.000Z"));
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "",
+      mode: "preparing",
+      queueStatus: "queued",
+      queuedAt: "2024-01-01T00:00:50.000Z",
+      queuePosition: 2,
+    });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Waiting in queue · #2 (00:10)");
+    });
   });
 
   it("stops poll when getPlaybackInfo throws", async () => {

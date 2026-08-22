@@ -84,15 +84,31 @@ pub struct PlaybackInfo {
     pub url: String,
     /// `direct`, `cache`, or `preparing`
     pub mode: String,
+    /// When preparing: `queued` or `processing`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobStatus {
     pub id: String,
+    /// `trim`, `compress`, or `preview`
     pub kind: String,
+    /// `queued` | `processing` | `completed` | `failed` | `cancelled`
     pub status: String,
     pub progress: f64,
     pub message: Option<String>,
     pub output_path: Option<String>,
+    pub source_path: Option<String>,
+    pub source_filename: Option<String>,
+    pub queued_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
 }

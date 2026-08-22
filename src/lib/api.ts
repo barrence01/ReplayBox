@@ -115,8 +115,36 @@ export function getJobStatus(jobId: string) {
   return invoke<JobStatus | null>("get_job_status", { jobId });
 }
 
+export function listJobs() {
+  return invoke<JobStatus[]>("list_jobs");
+}
+
+export function listPreviewJobs() {
+  return invoke<JobStatus[]>("list_preview_jobs");
+}
+
 export function cancelJob(jobId: string) {
   return invoke<void>("cancel_job", { jobId });
+}
+
+export function cancelPreviewJob(jobId: string) {
+  return invoke<void>("cancel_preview_job", { jobId });
+}
+
+export function dismissJob(jobId: string) {
+  return invoke<void>("dismiss_job", { jobId });
+}
+
+export function dismissPreviewJob(jobId: string) {
+  return invoke<void>("dismiss_preview_job", { jobId });
+}
+
+export function clearFinishedJobs() {
+  return invoke<void>("clear_finished_jobs");
+}
+
+export function clearFinishedPreviewJobs() {
+  return invoke<void>("clear_finished_preview_jobs");
 }
 
 export function startTrim(request: TrimRequest) {
