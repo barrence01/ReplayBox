@@ -72,19 +72,26 @@ The **preview cache** holds remuxed or transcoded MP4 copies used for in-app pla
 
 Logs are created when the app **runs** (dev or installed binary), not by `./scripts/build-all.sh` alone.
 
-- **Rotation:** one log file per day, named `replaybox.log.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
+| File | Contents | Retention |
+|------|----------|-----------|
+| `replaybox.log.*` | Application events (catalog scan, cache jobs, errors) | 7 days |
+| `ffmpeg.log.*` | Raw stderr from preview-cache FFmpeg jobs | 7 days |
+
+- **Rotation:** one log file per day, named `{basename}.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
 - **Retention:** at most 7 days of rotated log files; older files are removed on startup.
-- **Default level:** `info`.
+- **Default level (`replaybox.log` only):** `info`.
 - **Override:** set `RUST_LOG` before starting the app, for example `RUST_LOG=debug npm run tauri:dev`.
-- **Debug builds:** logs go to the daily file and to stderr.
-- **Release builds:** logs go to the daily file only.
+- **Debug builds:** app logs go to the daily file and to stderr.
+- **Release builds:** app logs go to the daily file only.
+- **FFmpeg logs:** written as raw stderr lines to `ffmpeg.log` (not routed through `tracing` or `RUST_LOG`).
 
-Typical entries include catalog scan start/finish, skipped unchanged files during indexing, media server errors, and tray or autostart setup failures.
+Typical `replaybox.log` entries include catalog scan start/finish, skipped unchanged files during indexing, media server errors, and tray or autostart setup failures.
 
-To inspect today's log:
+To inspect today's logs:
 
 ```bash
 tail -f ~/.local/share/org.replaybox/logs/replaybox.log.$(date +%F)
+tail -f ~/.local/share/org.replaybox/logs/ffmpeg.log.$(date +%F)
 ```
 
 ## System tray

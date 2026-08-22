@@ -1,3 +1,4 @@
+use crate::logging::{append_ffmpeg_log_bytes, flush_ffmpeg_log};
 use crate::models::Recording;
 use crate::playback::PlaybackStrategy;
 use crate::settings::Settings;
@@ -6,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,14 +191,16 @@ pub fn audio_copy_compatible(audio_codec: Option<&str>) -> bool {
 
 fn spawn_stderr_reader(stderr: std::process::ChildStderr) {
     thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            match line {
-                Ok(l) if !l.trim().is_empty() => tracing::info!(target: "ffmpeg", "{l}"),
-                Ok(_) => {}
+        let mut reader = BufReader::new(stderr);
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => append_ffmpeg_log_bytes(&buf[..n]),
                 Err(_) => break,
             }
         }
+        flush_ffmpeg_log();
     });
 }
 
@@ -225,7 +228,7 @@ fn run_ffmpeg_cache(
     }
 
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "info", "-nostdin", "-y"]);
+    cmd.args(["-hide_banner", "-nostdin", "-y"]);
     cmd.arg("-i").arg(input);
 
     match strategy {
@@ -479,12 +482,13 @@ pub fn ensure_cache_job(
                 CacheJobStatus::Ready { path: output }
             }
             Err(e) => {
-                tracing::info!(
+                tracing::error!(
                     recording_id = %recording_id,
+                    strategy = ?strategy,
                     duration_ms = elapsed_ms,
                     attempt = entry.attempts,
                     error = %e,
-                    "playback cache job failed"
+                    "playback cache job failed; see ffmpeg.log for stderr"
                 );
                 let _ = fs::remove_file(&output);
                 let _ = fs::remove_file(cache_temp_path(&output));
