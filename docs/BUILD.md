@@ -18,6 +18,27 @@ Or via npm:
 npm run build:all
 ```
 
+### AppImage
+
+To build only the Linux AppImage and copy it to `build/` at the repo root:
+
+```bash
+chmod +x scripts/build-appimage.sh   # once
+./scripts/build-appimage.sh
+```
+
+Or via npm:
+
+```bash
+npm run build:appimage
+```
+
+The script runs the same host checks and FFmpeg prepare as `build-all`, stages host GStreamer plugins into `src-tauri/.appimage-gst/` for WebKit `<video>` playback, then `tauri build --bundles appimage`, and copies `*.AppImage` from `src-tauri/target/release/bundle/appimage/` into `build/`. It sets `NO_STRIP=true` so linuxdeploy works on Arch (bundled `strip` otherwise fails on modern system libraries).
+
+FFmpeg/FFprobe showing as “found” in Settings does **not** cover editor playback: the editor uses WebKitGTK + GStreamer. Without plugins in the AppImage, opening the editor can freeze the UI.
+
+ReplayBox allows only **one running instance**. A second launch focuses (and shows) the existing window — including when it was hidden to the tray.
+
 For day-to-day development:
 
 ```bash
@@ -134,13 +155,20 @@ sudo pacman -S --needed \
   appmenu-gtk-module \
   libappindicator-gtk3 \
   librsvg \
-  xdg-utils
+  xdg-utils \
+  gstreamer \
+  gst-plugins-base \
+  gst-plugins-good \
+  gst-plugins-bad \
+  gst-plugins-ugly \
+  gst-libav
 ```
 
 - **`nasm`** — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
 - **`x264`** — required for `--enable-libx264` in the bundled FFmpeg build.
 - **`libappindicator-gtk3`** — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
+- **GStreamer + plugins / `gst-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` copies `/usr/lib/gstreamer-1.0` into the bundle.
 
 ### Other distros
 
@@ -156,6 +184,8 @@ Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node
 | **Staged FFmpeg tools** | Every prepare | `src-tauri/resources/ffmpeg/{ffmpeg,ffprobe}` | Used by the app / Tauri bundle |
 | **Rust crates** | `cargo` / `tauri build` | Cargo registry + target dir | Downloaded by Cargo as needed |
 | **App binary / installers** | `tauri build` | `src-tauri/target/release/` (+ bundle formats if enabled) | Production output |
+| **AppImage copy** | `build:appimage` | `build/*.AppImage` | Copied from Tauri bundle output |
+| **Staged GStreamer plugins** | `build:appimage` | `src-tauri/.appimage-gst/` | Copied from `/usr/lib/gstreamer-1.0` into the AppImage |
 
 ### FFmpeg cache behavior
 
@@ -173,6 +203,7 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 | `npm run tauri:dev` | FFmpeg + Tauri/Vite dev |
 | `npm run tauri:build` | FFmpeg + production Tauri build |
 | `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + production build |
+| `npm run build:appimage` / `./scripts/build-appimage.sh` | Same checks + AppImage only → `build/` |
 
 ## License note (bundled FFmpeg)
 
@@ -190,4 +221,6 @@ The bundled FFmpeg is configured with **`--enable-gpl`** and **libx264**. Distri
 | Slow first build | Normal: compiling FFmpeg from source can take several minutes |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev` |
 | Vite `The service is no longer running` after crash | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev` |
-| Log file not found at `~/.local/state/org.replaybox/` | Wrong path in older docs; logs are under `~/.local/share/org.replaybox/logs/` after the app has run at least once |
+| `failed to run linuxdeploy` when bundling AppImage | On Arch, use `./scripts/build-appimage.sh` (sets `NO_STRIP=true`), or export `NO_STRIP=true` before `tauri build` |
+| AppImage freezes when opening the editor | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh`. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
+| Second launch opens another window | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance` |
