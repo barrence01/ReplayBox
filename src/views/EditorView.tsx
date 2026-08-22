@@ -108,6 +108,8 @@ export function EditorView({
     return () => window.clearInterval(id);
   }, [editBusy]);
 
+  const rootRef = useRef<HTMLElement>(null);
+
   useEffect(() => {
     const initialDuration = catalogDurationMs || 1;
     setTimelineDurationMs(initialDuration);
@@ -121,6 +123,7 @@ export function EditorView({
     setTimelineLocked(false);
     setDraftStartMs(null);
     setDraftEndMs(null);
+    rootRef.current?.closest(".main")?.scrollTo(0, 0);
   }, [recording.id, catalogDurationMs]);
 
   function handleVideoDuration(ms: number) {
@@ -314,7 +317,7 @@ export function EditorView({
   }
 
   return (
-    <section className="view editor">
+    <section ref={rootRef} className="view editor">
       {conflict && (
         <ConflictModal
           filename={conflict.filename}
