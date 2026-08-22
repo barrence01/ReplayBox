@@ -272,6 +272,93 @@ describe("VideoPlayer", () => {
     });
   });
 
+  it("keeps elapsed when remounted with same startedAt", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:05.000Z"));
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "",
+      mode: "preparing",
+      queueStatus: "processing",
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: "2024-01-01T00:00:00.000Z",
+    });
+
+    const { container, unmount } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Preparing preview… (00:05)");
+    });
+    expect(container.textContent).not.toContain("Preparing preview… (00:00)");
+
+    unmount();
+    const second = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(second.container.textContent).toContain("Preparing preview… (00:05)");
+    });
+  });
+
+  it("updates from queued to processing on poll", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:01:00.000Z"));
+    getPlaybackInfoMock
+      .mockResolvedValueOnce({
+        url: "",
+        mode: "preparing",
+        queueStatus: "queued",
+        queuedAt: "2024-01-01T00:00:50.000Z",
+        queuePosition: 1,
+      })
+      .mockResolvedValue({
+        url: "",
+        mode: "preparing",
+        queueStatus: "processing",
+        queuedAt: "2024-01-01T00:00:50.000Z",
+        startedAt: "2024-01-01T00:01:00.000Z",
+      });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Waiting in queue · #1 (00:10)");
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Preparing preview…");
+    });
+  });
+
   it("stops poll when getPlaybackInfo throws", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     getPlaybackInfoMock

@@ -37,8 +37,8 @@ Rust unit tests use in-module `#[cfg(test)]` blocks (for example in `settings.rs
 
 | Layer | Runner | Focus |
 |-------|--------|--------|
-| TypeScript helpers / views | Vitest | Pure `src/lib/*` logic; Settings watch-folder UX with mocks |
-| Rust library | `cargo test` | Path/settings validation, catalog helpers, FFmpeg path/JSON parse helpers, SQLite CRUD, tool resolution |
+| TypeScript helpers / views | Vitest | Pure `src/lib/*` logic (incl. `queueHelpers`); QueuesView/JobBar/VideoPlayer preparing/EditorView busy with mocks; Settings watch-folder UX |
+| Rust library | `cargo test` | Path/settings validation, catalog helpers, FFmpeg path/JSON parse helpers, SQLite CRUD, tool resolution, `job_queue` / `preview_queue` FIFO APIs |
 
 Not covered by unit tests (intentionally): live FFmpeg jobs, full Tauri command integration, Playwright-style E2E.
 

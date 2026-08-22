@@ -4,8 +4,11 @@ import {
   countActive,
   formatElapsed,
   formatJobElapsed,
+  isActiveJob,
+  isTerminalJob,
   mergeJob,
   queuePosition,
+  statusLabel,
 } from "./queueHelpers";
 
 function job(partial: Partial<JobStatus> & Pick<JobStatus, "id" | "status">): JobStatus {
@@ -53,6 +56,49 @@ describe("queueHelpers", () => {
         now,
       ),
     ).toBe("00:30");
+  });
+
+  it("formats queued and processing elapsed from the right timestamps", () => {
+    const now = Date.parse("2024-01-01T00:01:00.000Z");
+    expect(
+      formatJobElapsed(
+        job({
+          id: "q",
+          status: "queued",
+          queuedAt: "2024-01-01T00:00:40.000Z",
+        }),
+        now,
+      ),
+    ).toBe("00:20");
+    expect(
+      formatJobElapsed(
+        job({
+          id: "p",
+          status: "processing",
+          queuedAt: "2024-01-01T00:00:00.000Z",
+          startedAt: "2024-01-01T00:00:50.000Z",
+        }),
+        now,
+      ),
+    ).toBe("00:10");
+  });
+
+  it("maps status labels", () => {
+    expect(statusLabel("queued")).toBe("Waiting in queue");
+    expect(statusLabel("processing")).toBe("Processing");
+    expect(statusLabel("completed")).toBe("Completed");
+    expect(statusLabel("failed")).toBe("Failed");
+    expect(statusLabel("cancelled")).toBe("Cancelled");
+  });
+
+  it("classifies active and terminal statuses", () => {
+    expect(isActiveJob("queued")).toBe(true);
+    expect(isActiveJob("processing")).toBe(true);
+    expect(isActiveJob("completed")).toBe(false);
+    expect(isTerminalJob("completed")).toBe(true);
+    expect(isTerminalJob("failed")).toBe(true);
+    expect(isTerminalJob("cancelled")).toBe(true);
+    expect(isTerminalJob("queued")).toBe(false);
   });
 
   it("merges job updates by id", () => {

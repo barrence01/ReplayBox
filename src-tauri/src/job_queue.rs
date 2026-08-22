@@ -376,4 +376,52 @@ mod tests {
         assert!(q.dismiss("a").is_ok());
         assert!(q.get("a").is_none());
     }
+
+    #[test]
+    fn cancel_processing_sets_finished_at() {
+        let q = EditJobQueue::new();
+        q.enqueue(queued_job("a", "trim"), trim_payload("a"));
+        let (id, _) = q.try_take_next().unwrap();
+        assert_eq!(id, "a");
+
+        let cancelled = q.mark_cancelled_processing("a").unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.finished_at.is_some());
+    }
+
+    #[test]
+    fn clear_finished_keeps_active() {
+        let q = EditJobQueue::new();
+        q.enqueue(queued_job("done", "trim"), trim_payload("done"));
+        q.enqueue(queued_job("active", "compress"), compress_payload("active"));
+        let (id, _) = q.try_take_next().unwrap();
+        q.finish_job(&id, "completed", Some("ok".into()), None, Some(1.0));
+
+        q.clear_finished();
+        let listed = q.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "active");
+        assert_eq!(listed[0].status, "queued");
+    }
+
+    #[test]
+    fn update_progress_only_while_processing() {
+        let q = EditJobQueue::new();
+        q.enqueue(queued_job("a", "trim"), trim_payload("a"));
+        assert!(q.update_progress("a", 0.5).is_none());
+
+        let (id, _) = q.try_take_next().unwrap();
+        let updated = q.update_progress(&id, 0.42).unwrap();
+        assert_eq!(updated.status, "processing");
+        assert!((updated.progress - 0.42).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dismiss_rejects_processing() {
+        let q = EditJobQueue::new();
+        q.enqueue(queued_job("a", "trim"), trim_payload("a"));
+        let (id, _) = q.try_take_next().unwrap();
+        let err = q.dismiss(&id).unwrap_err();
+        assert!(err.contains("finished"));
+    }
 }

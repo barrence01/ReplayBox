@@ -364,6 +364,11 @@ mod tests {
 
     #[test]
     fn is_unchanged_detects_matching_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let thumb = dir.path().join("clip.jpg");
+        std::fs::write(&thumb, b"x").unwrap();
+        let thumb_path = thumb.to_str().unwrap().to_string();
+
         let rec = Recording {
             id: "r1".into(),
             path: "/videos/clip.mp4".into(),
@@ -378,7 +383,7 @@ mod tests {
             is_vfr: false,
             created_at: None,
             modified_at: Some("2024-01-02T00:00:00Z".into()),
-            thumbnail_path: None,
+            thumbnail_path: Some(thumb_path),
             session_id: None,
             indexed_at: "2024-01-03T00:00:00Z".into(),
         };

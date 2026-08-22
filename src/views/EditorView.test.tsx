@@ -330,4 +330,91 @@ describe("EditorView timeline wiring", () => {
     });
     expect(onJobStarted).toHaveBeenCalled();
   });
+
+  it("does not block when active job is for another path", async () => {
+    vi.mocked(api.resolveCopyPath).mockResolvedValue({
+      path: "/recordings/clip_compressed.mp4",
+      filename: "clip_compressed.mp4",
+      exists: false,
+    });
+    vi.mocked(api.startCompress).mockResolvedValue({
+      id: "job-other",
+      kind: "compress",
+      status: "queued",
+      progress: 0,
+      message: null,
+      outputPath: "/recordings/other_compressed.mp4",
+      sourcePath: recording.path,
+      sourceFilename: recording.filename,
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    renderEditor({
+      editJobs: [
+        {
+          id: "job-1",
+          kind: "compress",
+          status: "processing",
+          progress: 0.2,
+          message: null,
+          outputPath: "/other/out.mp4",
+          sourcePath: "/other/video.mp4",
+          sourceFilename: "video.mp4",
+          queuedAt: "2024-01-01T00:00:00.000Z",
+          startedAt: "2024-01-01T00:00:01.000Z",
+          finishedAt: null,
+        },
+      ],
+    });
+
+    const compress = screen.getByRole("button", {
+      name: "Compress",
+    }) as HTMLButtonElement;
+    expect(compress.disabled).toBe(false);
+    fireEvent.click(compress);
+    await vi.waitFor(() => {
+      expect(api.startCompress).toHaveBeenCalled();
+    });
+  });
+
+  it("shows queued hint with position", () => {
+    renderEditor({
+      editJobs: [
+        {
+          id: "job-front",
+          kind: "trim",
+          status: "queued",
+          progress: 0,
+          message: null,
+          outputPath: null,
+          sourcePath: "/other/a.mp4",
+          sourceFilename: "a.mp4",
+          queuedAt: "2024-01-01T00:00:00.000Z",
+          startedAt: null,
+          finishedAt: null,
+        },
+        {
+          id: "job-self",
+          kind: "compress",
+          status: "queued",
+          progress: 0,
+          message: null,
+          outputPath: null,
+          sourcePath: recording.path,
+          sourceFilename: recording.filename,
+          queuedAt: "2024-01-01T00:00:01.000Z",
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    });
+
+    expect(screen.getByText(/Compress queued · #2/)).toBeTruthy();
+    expect(
+      (screen.getAllByRole("button", { name: /Working/ }) as HTMLButtonElement[])
+        .length,
+    ).toBe(2);
+  });
 });

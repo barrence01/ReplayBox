@@ -634,4 +634,67 @@ mod tests {
         assert_eq!(job.status, "cancelled");
         assert!(q.inner.lock().unwrap().pending.is_empty());
     }
+
+    #[test]
+    fn lookup_by_recording_returns_position() {
+        let q = PreviewQueue::new();
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let _b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
+
+        let (job_b, pos_b) = q.lookup_by_recording("b").unwrap();
+        assert_eq!(job_b.status, "queued");
+        assert_eq!(pos_b, Some(2));
+
+        let (id, _) = q.try_take_next().unwrap();
+        assert_eq!(id, a);
+        let (job_a, pos_a) = q.lookup_by_recording("a").unwrap();
+        assert_eq!(job_a.status, "processing");
+        assert_eq!(pos_a, None);
+    }
+
+    #[test]
+    fn lookup_ignores_terminal() {
+        let q = PreviewQueue::new();
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        q.try_take_next().unwrap();
+        q.finish_work(&a, Ok(PathBuf::from("/tmp/a.mp4")));
+        assert!(q.lookup_by_recording("a").is_none());
+    }
+
+    #[test]
+    fn dismiss_terminal_only() {
+        let q = PreviewQueue::new();
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        assert!(q.dismiss(&a).is_err());
+
+        q.try_take_next().unwrap();
+        q.finish_work(&a, Ok(PathBuf::from("/tmp/a.mp4")));
+        assert!(q.dismiss(&a).is_ok());
+        assert!(q.list().is_empty());
+    }
+
+    #[test]
+    fn clear_finished_keeps_queued() {
+        let q = PreviewQueue::new();
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let _b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
+        q.try_take_next().unwrap();
+        q.finish_work(&a, Ok(PathBuf::from("/tmp/a.mp4")));
+
+        q.clear_finished();
+        let listed = q.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, "queued");
+        assert_eq!(listed[0].source_filename.as_deref(), Some("b.mp4"));
+    }
+
+    #[test]
+    fn cancel_processing_sets_finished_at() {
+        let q = PreviewQueue::new();
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        q.try_take_next().unwrap();
+        let job = q.cancel_job(&a).unwrap();
+        assert_eq!(job.status, "cancelled");
+        assert!(job.finished_at.is_some());
+    }
 }
