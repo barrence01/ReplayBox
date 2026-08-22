@@ -654,6 +654,11 @@ select {
   min-width: 0;
 }
 
+.folder-recording-list > li {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .folder-recording-list__item {
   display: flex;
   align-items: center;
@@ -661,6 +666,7 @@ select {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+  overflow: hidden;
   text-align: left;
   padding: 0.35rem 0.45rem;
   background: var(--bg-soft);
@@ -704,6 +710,7 @@ select {
 }
 
 .folder-recording-list__name {
+  flex: 1;
   font-size: 0.85rem;
   min-width: 0;
   white-space: nowrap;
