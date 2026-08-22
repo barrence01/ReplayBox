@@ -119,6 +119,7 @@ export function EditorView({
     setError(null);
     setConflict(null);
     setConfirmDelete(false);
+    setDeleting(false);
     setPlaying(false);
     setTimelineLocked(false);
     setDraftStartMs(null);

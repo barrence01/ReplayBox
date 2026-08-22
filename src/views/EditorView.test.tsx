@@ -417,4 +417,53 @@ describe("EditorView timeline wiring", () => {
         .length,
     ).toBe(2);
   });
+
+  it("re-enables Delete after switching to another recording", async () => {
+    vi.mocked(api.deleteRecording).mockResolvedValueOnce(undefined);
+    const next: Recording = {
+      ...recording,
+      id: "rec-2",
+      path: "/recordings/other.mp4",
+      filename: "other.mp4",
+    };
+    const onDeleted = vi.fn();
+
+    const { rerender } = renderEditor({ onDeleted });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete video" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await vi.waitFor(() => {
+      expect(onDeleted).toHaveBeenCalled();
+    });
+
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Delete video",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    rerender(
+      <EditorView
+        recording={next}
+        folderRecordings={[]}
+        preferNvenc={false}
+        editJobs={[]}
+        onBack={() => undefined}
+        onOpen={() => undefined}
+        onDeleted={onDeleted}
+        onJobStarted={() => undefined}
+      />,
+    );
+
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Delete video",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
 });
