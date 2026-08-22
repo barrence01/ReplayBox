@@ -58,15 +58,17 @@ Rescan and folder scans run asynchronously; the UI listens for `catalog-scan-sta
 
 ## Logging
 
-ReplayBox writes backend logs under the Tauri app data directory:
+ReplayBox stores application files in XDG-aligned directories (via Tauri `PathResolver`):
 
-| Platform | Log directory |
-|----------|----------------|
-| Linux | `~/.local/share/com.williambarrence.replaybox/logs/` |
-| macOS | `~/Library/Application Support/com.williambarrence.replaybox/logs/` |
-| Windows | `%APPDATA%\com.williambarrence.replaybox\logs\` |
+| Kind | Linux | macOS | Windows |
+|------|-------|-------|---------|
+| Config (`settings.json`) | `~/.config/org.replaybox/` | `~/Library/Application Support/org.replaybox/` | `%APPDATA%\org.replaybox\` |
+| Data (`replaybox.db`) | `~/.local/share/org.replaybox/` | `~/Library/Application Support/org.replaybox/` | `%APPDATA%\org.replaybox\` |
+| Logs | `~/.local/state/org.replaybox/` | `~/Library/Logs/org.replaybox/` | `%LOCALAPPDATA%\org.replaybox\logs\` |
+| Cache (thumbnails) | `~/.cache/org.replaybox/thumbnails/` | `~/Library/Caches/org.replaybox/thumbnails/` | `%LOCALAPPDATA%\org.replaybox\cache\thumbnails\` |
 
-- **Rotation:** one file per day, named `replaybox.log.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
+- **Rotation:** one log file per day, named `replaybox.log.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
+- **Retention:** at most 7 days of rotated log files; older files are removed on startup.
 - **Default levels:** `info` globally, `debug` for the ReplayBox crate (`info,replaybox=debug`).
 - **Override:** set `RUST_LOG` before starting the app, for example `RUST_LOG=debug npm run tauri:dev`.
 - **Debug builds:** logs go to the daily file and to stderr.
@@ -77,7 +79,7 @@ Typical entries include catalog scan start/finish, skipped unchanged files durin
 To inspect today's log on Linux:
 
 ```bash
-tail -f ~/.local/share/com.williambarrence.replaybox/logs/replaybox.log.$(date +%F)
+tail -f ~/.local/state/org.replaybox/replaybox.log.$(date +%F)
 ```
 
 ## System tray

@@ -1,4 +1,3 @@
-use crate::settings::thumbs_dir;
 use crate::state::AppState;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -98,7 +97,7 @@ fn resolve_allowed_path(state: &AppState, raw: &str) -> Result<PathBuf, String> 
 
     let watch = PathBuf::from(&state.settings.lock().watch_dir);
     let watch_canon = watch.canonicalize().ok();
-    let thumbs = thumbs_dir(&state.app_data);
+    let thumbs = state.paths.thumbs_dir();
     let thumbs_canon = thumbs.canonicalize().ok();
 
     let under_watch = watch_canon

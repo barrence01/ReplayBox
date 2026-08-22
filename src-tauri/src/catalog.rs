@@ -1,7 +1,7 @@
 use crate::db;
 use crate::ffmpeg::{self, ProbeInfo};
 use crate::models::Recording;
-use crate::settings::{thumbs_dir, Settings};
+use crate::settings::{AppPaths, Settings};
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use std::fs;
@@ -80,7 +80,7 @@ pub fn resolve_folder_in_watch_dir(watch_dir: &str, folder_path: &str) -> Result
 pub fn index_file(
     conn: &rusqlite::Connection,
     settings: &Settings,
-    app_data: &Path,
+    paths: &AppPaths,
     path: &Path,
 ) -> Result<Recording, String> {
     if !path.is_file() || !is_video_file(path) {
@@ -109,7 +109,7 @@ pub fn index_file(
 
     let probe = ffmpeg::probe(&settings.ffprobe_path, &abs)?;
 
-    let thumbs = thumbs_dir(app_data);
+    let thumbs = paths.thumbs_dir();
     fs::create_dir_all(&thumbs).map_err(|e| e.to_string())?;
     let thumb_path = thumbs.join(format!("{id}.jpg"));
     let thumb_str = match ffmpeg::generate_thumbnail(
@@ -172,7 +172,7 @@ fn index_paths(
     let mut count = 0usize;
     for path in paths {
         let conn = state.db.lock();
-        match index_file(&conn, settings, &state.app_data, path) {
+        match index_file(&conn, settings, &state.paths, path) {
             Ok(_) => count += 1,
             Err(e) => tracing::warn!(path = %path.display(), error = %e, "index skipped"),
         }
@@ -185,7 +185,7 @@ pub fn scan_library(state: &AppState, settings: &Settings) -> Result<usize, Stri
     let root = PathBuf::from(&settings.watch_dir);
     if !root.exists() {
         let conn = state.db.lock();
-        prune_missing(&conn, &state.app_data)?;
+        prune_missing(&conn, &state.paths)?;
         return Ok(0);
     }
 
@@ -193,7 +193,7 @@ pub fn scan_library(state: &AppState, settings: &Settings) -> Result<usize, Stri
     let count = index_paths(state, settings, &paths)?;
 
     let conn = state.db.lock();
-    prune_missing(&conn, &state.app_data)?;
+    prune_missing(&conn, &state.paths)?;
     Ok(count)
 }
 
@@ -206,7 +206,7 @@ pub fn scan_folder(
     let folder = resolve_folder_in_watch_dir(&settings.watch_dir, folder_path)?;
     if !folder.exists() {
         let conn = state.db.lock();
-        prune_missing_in_folder(&conn, &state.app_data, &folder)?;
+        prune_missing_in_folder(&conn, &state.paths, &folder)?;
         return Ok(0);
     }
 
@@ -214,25 +214,25 @@ pub fn scan_folder(
     let count = index_paths(state, settings, &paths)?;
 
     let conn = state.db.lock();
-    prune_missing_in_folder(&conn, &state.app_data, &folder)?;
+    prune_missing_in_folder(&conn, &state.paths, &folder)?;
     Ok(count)
 }
 
 /// Drop catalog entries whose files are gone; remove orphan thumbnails.
-fn prune_missing(conn: &rusqlite::Connection, app_data: &Path) -> Result<(), String> {
+fn prune_missing(conn: &rusqlite::Connection, paths: &AppPaths) -> Result<(), String> {
     let recordings = db::list_recordings(conn, None)?;
     for rec in recordings {
         if Path::new(&rec.path).exists() {
             continue;
         }
-        remove_stale_recording(conn, app_data, &rec)?;
+        remove_stale_recording(conn, paths, &rec)?;
     }
     Ok(())
 }
 
 fn prune_missing_in_folder(
     conn: &rusqlite::Connection,
-    app_data: &Path,
+    paths: &AppPaths,
     folder: &Path,
 ) -> Result<(), String> {
     let prefix = normalize_dir(&folder.to_string_lossy());
@@ -241,21 +241,21 @@ fn prune_missing_in_folder(
         if Path::new(&rec.path).exists() {
             continue;
         }
-        remove_stale_recording(conn, app_data, &rec)?;
+        remove_stale_recording(conn, paths, &rec)?;
     }
     Ok(())
 }
 
 fn remove_stale_recording(
     conn: &rusqlite::Connection,
-    app_data: &Path,
+    paths: &AppPaths,
     rec: &Recording,
 ) -> Result<(), String> {
     let thumb = db::delete_recording_by_id(conn, &rec.id)?;
     if let Some(thumb_path) = thumb.or(rec.thumbnail_path.clone()) {
         let _ = fs::remove_file(&thumb_path);
     }
-    let fallback = thumbs_dir(app_data).join(format!("{}.jpg", rec.id));
+    let fallback = paths.thumbs_dir().join(format!("{}.jpg", rec.id));
     let _ = fs::remove_file(fallback);
     Ok(())
 }

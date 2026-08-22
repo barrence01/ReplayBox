@@ -1,10 +1,45 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 /// Default watch directory for game recordings (user-configurable).
 pub const DEFAULT_WATCH_DIR: &str =
     "/run/media/williambarrence/HDD/WilliamBarrence/Gravacoes";
+
+/// XDG-aligned application directories resolved via Tauri `PathResolver`.
+#[derive(Debug, Clone)]
+pub struct AppPaths {
+    pub config_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub cache_dir: PathBuf,
+}
+
+impl AppPaths {
+    /// Resolve config, data, log, and cache directories for the running app.
+    pub fn resolve(app: &tauri::App) -> Result<Self, String> {
+        let path = app.path();
+        Ok(Self {
+            config_dir: path.app_config_dir().map_err(|e| e.to_string())?,
+            data_dir: path.app_data_dir().map_err(|e| e.to_string())?,
+            log_dir: path.app_log_dir().map_err(|e| e.to_string())?,
+            cache_dir: path.app_cache_dir().map_err(|e| e.to_string())?,
+        })
+    }
+
+    pub fn settings_path(&self) -> PathBuf {
+        self.config_dir.join("settings.json")
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("replaybox.db")
+    }
+
+    pub fn thumbs_dir(&self) -> PathBuf {
+        self.cache_dir.join("thumbnails")
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,22 +81,6 @@ impl Settings {
         let raw = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(path, raw).map_err(|e| e.to_string())
     }
-}
-
-pub fn settings_path(app_data: &Path) -> PathBuf {
-    app_data.join("settings.json")
-}
-
-pub fn db_path(app_data: &Path) -> PathBuf {
-    app_data.join("replaybox.db")
-}
-
-pub fn thumbs_dir(app_data: &Path) -> PathBuf {
-    app_data.join("thumbnails")
-}
-
-pub fn logs_dir(app_data: &Path) -> PathBuf {
-    app_data.join("logs")
 }
 
 /// Ensure the watch folder exists, is a directory, and is readable.

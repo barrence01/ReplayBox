@@ -9,7 +9,7 @@ mod settings;
 mod state;
 mod tools;
 
-use settings::{db_path, settings_path, thumbs_dir, Settings};
+use settings::{AppPaths, Settings};
 use state::AppState;
 use std::sync::Arc;
 use tauri::{
@@ -70,15 +70,13 @@ pub fn run() {
             Some(vec![]),
         ))
         .setup(|app| {
-            let app_data = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
-            std::fs::create_dir_all(&app_data)?;
-            std::fs::create_dir_all(thumbs_dir(&app_data))?;
-            logging::init_logging(&app_data)?;
+            let paths = AppPaths::resolve(app)?;
+            std::fs::create_dir_all(&paths.config_dir)?;
+            std::fs::create_dir_all(&paths.data_dir)?;
+            std::fs::create_dir_all(&paths.cache_dir)?;
+            logging::init_logging(&paths.log_dir)?;
 
-            let mut settings = Settings::load(&settings_path(&app_data));
+            let mut settings = Settings::load(&paths.settings_path());
             if settings.ffmpeg_path.trim() == "ffmpeg" {
                 settings.ffmpeg_path.clear();
             }
@@ -87,8 +85,8 @@ pub fn run() {
             }
 
             let resource_dir = tools::discover_resource_dir(app.path().resource_dir().ok());
-            let conn = db::open_db(&db_path(&app_data))?;
-            let state = AppState::new(app_data, resource_dir, conn, settings);
+            let conn = db::open_db(&paths.db_path())?;
+            let state = AppState::new(paths, resource_dir, conn, settings);
 
             match media_server::start(state.clone()) {
                 Ok(url) => {

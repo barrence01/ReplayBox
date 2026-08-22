@@ -144,7 +144,7 @@ pub fn update_settings(
     settings: Settings,
 ) -> Result<Settings, String> {
     settings::validate_watch_dir(&settings.watch_dir)?;
-    let path = settings::settings_path(&state.app_data);
+    let path = state.paths.settings_path();
     settings.save(&path)?;
     *state.settings.lock() = settings.clone();
     sync_autostart(&app, settings.launch_on_startup)?;
@@ -624,7 +624,7 @@ fn finalize_job(
                     let _ = db::delete_recording_by_path(&conn, original_path);
                 }
 
-                let _ = catalog::index_file(&conn, &settings, &state.app_data, &path);
+                let _ = catalog::index_file(&conn, &settings, &state.paths, &path);
             }
             Err(e) => {
                 job.status = "error".into();

@@ -1,5 +1,5 @@
 use crate::models::JobStatus;
-use crate::settings::Settings;
+use crate::settings::{AppPaths, Settings};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ pub struct ScanState {
 }
 
 pub struct AppState {
-    pub app_data: PathBuf,
+    pub paths: AppPaths,
     pub resource_dir: Option<PathBuf>,
     /// Base URL of the localhost media server (e.g. http://127.0.0.1:12345).
     pub media_base_url: Mutex<Option<String>>,
@@ -28,13 +28,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(
-        app_data: PathBuf,
+        paths: AppPaths,
         resource_dir: Option<PathBuf>,
         db: Connection,
         settings: Settings,
     ) -> Arc<Self> {
         Arc::new(Self {
-            app_data,
+            paths,
             resource_dir,
             media_base_url: Mutex::new(None),
             db: Mutex::new(db),
