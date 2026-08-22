@@ -135,8 +135,15 @@ select {
   color: var(--text);
 }
 
-.banner {
+.app__top {
   grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.banner {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -152,7 +159,6 @@ select {
 }
 
 .job-bar {
-  grid-column: 2;
   padding: 0.55rem 1.2rem 0.65rem;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
@@ -434,6 +440,8 @@ select {
 
 .main {
   grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
   overflow: auto;
   padding: 0 1.5rem 2rem;
 }
@@ -1225,10 +1233,14 @@ select {
     margin: 0 0.6rem 0 0;
   }
 
-  .banner,
-  .job-bar,
+  .app__top {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
   .main {
     grid-column: 1;
+    grid-row: 3;
   }
 
   .editor__layout {

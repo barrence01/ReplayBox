@@ -194,26 +194,28 @@ function App() {
         </button>
       </nav>
 
-      <JobBar
-        editJobs={editJobs}
-        previewJobs={previewJobs}
-        onOpenQueues={() => setView("queues")}
-      />
+      <div className="app__top">
+        <JobBar
+          editJobs={editJobs}
+          previewJobs={previewJobs}
+          onOpenQueues={() => setView("queues")}
+        />
 
-      {banner && (
-        <div className="banner">
-          <span>{banner}</span>
-          <button type="button" onClick={() => setBanner(null)}>
-            Dismiss
-          </button>
-        </div>
-      )}
+        {banner && (
+          <div className="banner">
+            <span>{banner}</span>
+            <button type="button" onClick={() => setBanner(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
 
-      {!tools.ffmpeg || !tools.ffprobe ? (
-        <div className="banner banner--warn">
-          FFmpeg/FFprobe missing. Install them or set paths in Settings.
-        </div>
-      ) : null}
+        {!tools.ffmpeg || !tools.ffprobe ? (
+          <div className="banner banner--warn">
+            FFmpeg/FFprobe missing. Install them or set paths in Settings.
+          </div>
+        ) : null}
+      </div>
 
       <main className="main">
         {view === "library" && settings && (
