@@ -54,7 +54,7 @@ npm run build:all      # full production build (or ./scripts/build-all.sh)
 
 ## Logs
 
-Backend logs are written daily under the Tauri app log directory (`replaybox.log.YYYY-MM-DD`), with at most 7 days retained. Config, database, and cache use separate XDG-aligned folders. See **[docs/BUILD.md — Logging](docs/BUILD.md#logging)** for paths per platform and how to change verbosity with `RUST_LOG`.
+Backend logs are written daily to `~/.local/share/org.replaybox/logs/replaybox.log.YYYY-MM-DD` (at most 7 days retained). Config, database, and cache use separate XDG folders. See **[docs/BUILD.md — Logging](docs/BUILD.md#logging)** for all paths and how to change verbosity with `RUST_LOG`.
 
 ## Stack
 

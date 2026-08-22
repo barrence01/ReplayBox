@@ -2,7 +2,7 @@
 
 Build instructions for ReplayBox — see the [README](../README.md) for the project overview.
 
-This guide covers a full production build: host packages, downloads, bundled FFmpeg, and the Tauri app.
+This guide covers a full production build (tested on Arch Linux + KDE Plasma): host packages, downloads, bundled FFmpeg, and the Tauri app.
 
 ## Quick start
 
@@ -58,14 +58,16 @@ Rescan and folder scans run asynchronously; the UI listens for `catalog-scan-sta
 
 ## Logging
 
-ReplayBox stores application files in XDG-aligned directories (via Tauri `PathResolver`):
+Application files are stored under XDG directories resolved by Tauri `PathResolver` (`identifier`: `org.replaybox`):
 
-| Kind | Linux | macOS | Windows |
-|------|-------|-------|---------|
-| Config (`settings.json`) | `~/.config/org.replaybox/` | `~/Library/Application Support/org.replaybox/` | `%APPDATA%\org.replaybox\` |
-| Data (`replaybox.db`) | `~/.local/share/org.replaybox/` | `~/Library/Application Support/org.replaybox/` | `%APPDATA%\org.replaybox\` |
-| Logs | `~/.local/state/org.replaybox/` | `~/Library/Logs/org.replaybox/` | `%LOCALAPPDATA%\org.replaybox\logs\` |
-| Cache (thumbnails) | `~/.cache/org.replaybox/thumbnails/` | `~/Library/Caches/org.replaybox/thumbnails/` | `%LOCALAPPDATA%\org.replaybox\cache\thumbnails\` |
+| Kind | Path |
+|------|------|
+| Config (`settings.json`) | `~/.config/org.replaybox/` |
+| Data (`replaybox.db`) | `~/.local/share/org.replaybox/` |
+| Logs | `~/.local/share/org.replaybox/logs/` |
+| Cache (thumbnails) | `~/.cache/org.replaybox/thumbnails/` |
+
+Logs are created when the app **runs** (dev or installed binary), not by `./scripts/build-all.sh` alone.
 
 - **Rotation:** one log file per day, named `replaybox.log.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
 - **Retention:** at most 7 days of rotated log files; older files are removed on startup.
@@ -76,17 +78,17 @@ ReplayBox stores application files in XDG-aligned directories (via Tauri `PathRe
 
 Typical entries include catalog scan start/finish, skipped unchanged files during indexing, media server errors, and tray or autostart setup failures.
 
-To inspect today's log on Linux:
+To inspect today's log:
 
 ```bash
-tail -f ~/.local/state/org.replaybox/replaybox.log.$(date +%F)
+tail -f ~/.local/share/org.replaybox/logs/replaybox.log.$(date +%F)
 ```
 
 ## System tray
 
-The tray icon (StatusNotifier / AppIndicator on Linux) provides **Show** and **Quit**. Closing the main window hides the app; **Quit** exits the process.
+The tray icon (StatusNotifier on KDE Plasma; AppIndicator on some other desktops) provides **Show** and **Quit**. Closing the main window hides the app; **Quit** exits the process.
 
-On GNOME, install an AppIndicator/StatusNotifier package if tray icons are not visible (e.g. `libayatana-appindicator` / `libappindicator-gtk3` depending on the distro). KDE Plasma typically works via StatusNotifier.
+On **KDE Plasma**, the tray icon usually works out of the box via StatusNotifier. On **GNOME**, install AppIndicator/StatusNotifier support if the icon is missing (e.g. `libayatana-appindicator` / `libappindicator-gtk3` depending on the distro).
 
 ## Launch on login
 
@@ -127,7 +129,7 @@ sudo pacman -S --needed \
 
 - **`nasm`** — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
 - **`x264`** — required for `--enable-libx264` in the bundled FFmpeg build.
-- **`libappindicator-gtk3`** — recommended for system tray icons.
+- **`libappindicator-gtk3`** — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
 
 ### Other distros
@@ -178,3 +180,4 @@ The bundled FFmpeg is configured with **`--enable-gpl`** and **libx264**. Distri
 | Slow first build | Normal: compiling FFmpeg from source can take several minutes |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev` |
 | Vite `The service is no longer running` after crash | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev` |
+| Log file not found at `~/.local/state/org.replaybox/` | Wrong path in older docs; logs are under `~/.local/share/org.replaybox/logs/` after the app has run at least once |
