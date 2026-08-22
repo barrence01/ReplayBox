@@ -24,6 +24,7 @@ import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
 import { JobBar } from "./components/JobBar";
 import { recordingsInExactDir } from "./lib/libraryFolders";
+import { pickNeighborRecording } from "./lib/nextRecordingAfterDelete";
 import { sortRecordings } from "./lib/sortRecordings";
 import "./App.css";
 
@@ -218,7 +219,15 @@ function App() {
             onBack={leaveEditor}
             onOpen={openRecording}
             onDeleted={() => {
-              leaveEditor();
+              const neighbor = pickNeighborRecording(
+                folderRecordings,
+                selected.id,
+              );
+              if (neighbor) {
+                openRecording(neighbor);
+              } else {
+                leaveEditor();
+              }
               void refreshLibrary();
               setBanner("Recording deleted.");
             }}
