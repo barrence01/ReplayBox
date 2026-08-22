@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { clampToSeekableSec, isSeekAtTargetSec } from "./videoSeek";
+import { describe, expect, it, vi } from "vitest";
+import {
+  applyScrubSeek,
+  clampToSeekableSec,
+  isSeekAtTargetSec,
+} from "./videoSeek";
 
 function mockSeekable(ranges: Array<[number, number]>) {
   return {
@@ -38,5 +42,24 @@ describe("isSeekAtTargetSec", () => {
 
   it("rejects when outside tolerance", () => {
     expect(isSeekAtTargetSec(1, 5)).toBe(false);
+  });
+});
+
+describe("applyScrubSeek", () => {
+  it("uses fastSeek when available", () => {
+    const fastSeek = vi.fn();
+    const video = {
+      fastSeek,
+      currentTime: 0,
+    } as unknown as HTMLVideoElement;
+
+    applyScrubSeek(video, 12.5);
+    expect(fastSeek).toHaveBeenCalledWith(12.5);
+  });
+
+  it("falls back to currentTime when fastSeek is unavailable", () => {
+    const video = document.createElement("video");
+    applyScrubSeek(video, 3.25);
+    expect(video.currentTime).toBe(3.25);
   });
 });

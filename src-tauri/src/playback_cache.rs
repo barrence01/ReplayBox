@@ -19,6 +19,8 @@ const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_ATTEMPTS_PER_STRATEGY: u8 = 1;
 const JOB_STALE_TIMEOUT: Duration = Duration::from_secs(180);
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+/// Shorter GOP (~250ms @ 60fps) for scrub-friendly transcode previews.
+const SCRUB_PREVIEW_GOP: &str = "15";
 
 #[derive(Debug, Clone, Copy)]
 pub struct CleanupPolicy {
@@ -255,9 +257,9 @@ fn run_ffmpeg_cache(
                 "-r",
                 "60",
                 "-g",
-                "30",
+                SCRUB_PREVIEW_GOP,
                 "-keyint_min",
-                "30",
+                SCRUB_PREVIEW_GOP,
                 "-c:a",
                 "aac",
                 "-b:a",

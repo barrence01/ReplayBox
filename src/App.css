@@ -512,6 +512,19 @@ select {
   font-size: 0.85rem;
 }
 
+.video-player__seek-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
 .editor__transport {
   display: flex;
   align-items: center;
@@ -839,6 +852,17 @@ select {
   border: 1px solid var(--border);
   cursor: pointer;
   overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.timeline__track--scrubbing {
+  cursor: grabbing;
+}
+
+.timeline__track--locked {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .timeline__selection {
@@ -846,6 +870,7 @@ select {
   top: 0;
   bottom: 0;
   background: rgba(61, 156, 240, 0.28);
+  pointer-events: none;
 }
 
 .timeline__playhead {
@@ -854,6 +879,8 @@ select {
   bottom: 0;
   width: 2px;
   background: #fff;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .timeline__sliders {

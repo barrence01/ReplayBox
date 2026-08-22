@@ -16,6 +16,8 @@ import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
 import { FolderRecordingList } from "../components/FolderRecordingList";
 import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
 import { CompressIcon, FolderIcon, PauseIcon, PlayIcon, ScissorsIcon } from "../components/icons";
+import { clampPlayheadMs } from "../lib/timelinePosition";
+import { SEEK_TOLERANCE_SEC } from "../lib/videoSeek";
 
 type CopyCollision = "overwrite" | "unique";
 
@@ -64,6 +66,12 @@ export function EditorView({
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [timelineLocked, setTimelineLocked] = useState(false);
+  const [draftStartMs, setDraftStartMs] = useState<number | null>(null);
+  const [draftEndMs, setDraftEndMs] = useState<number | null>(null);
+
+  const timelineStartMs = draftStartMs ?? startMs;
+  const timelineEndMs = draftEndMs ?? endMs;
 
   useEffect(() => {
     const initialDuration = catalogDurationMs || 1;
@@ -75,6 +83,9 @@ export function EditorView({
     setConflict(null);
     setConfirmDelete(false);
     setPlaying(false);
+    setTimelineLocked(false);
+    setDraftStartMs(null);
+    setDraftEndMs(null);
   }, [recording.id, catalogDurationMs]);
 
   function handleVideoDuration(ms: number) {
@@ -89,15 +100,67 @@ export function EditorView({
     setCurrentMs((prev) => Math.min(prev, effectiveDuration));
   }
 
-  function seekTo(ms: number, start = startMs, end = endMs) {
-    const clamped = Math.min(Math.max(ms, start), end);
+  function previewStartTrim(ms: number) {
+    const nextEnd = draftEndMs ?? endMs;
+    const nextStart = Math.min(ms, nextEnd - 1);
+    setDraftStartMs(nextStart);
+    setCurrentMs((prev) => {
+      if (prev < nextStart || prev > nextEnd) {
+        return clampPlayheadMs(prev, nextStart, nextEnd);
+      }
+      return prev;
+    });
+  }
+
+  function previewEndTrim(ms: number) {
+    const nextStart = draftStartMs ?? startMs;
+    const nextEnd = Math.max(ms, nextStart + 1);
+    setDraftEndMs(nextEnd);
+    setCurrentMs((prev) => {
+      if (prev < nextStart || prev > nextEnd) {
+        return clampPlayheadMs(prev, nextStart, nextEnd);
+      }
+      return prev;
+    });
+  }
+
+  function commitTrimRange(nextStart: number, nextEnd: number) {
+    setDraftStartMs(null);
+    setDraftEndMs(null);
+    setStartMs(nextStart);
+    setEndMs(nextEnd);
+
+    const target = clampPlayheadMs(currentMs, nextStart, nextEnd);
+    setCurrentMs(target);
+
+    if (timelineLocked) return;
+    const videoMs = playerRef.current?.getCurrentMs() ?? 0;
+    if (Math.abs(videoMs - target) > SEEK_TOLERANCE_SEC * 1000) {
+      playerRef.current?.seekAndLock(target);
+    }
+  }
+
+  function handleSeekClick(ms: number) {
+    if (timelineLocked) return;
+    const clamped = clampPlayheadMs(ms, startMs, endMs);
     setCurrentMs(clamped);
-    playerRef.current?.seekTo(clamped);
+    playerRef.current?.seekAndLock(clamped);
+  }
+
+  function scrubTo(ms: number) {
+    const clamped = clampPlayheadMs(ms, startMs, endMs);
+    playerRef.current?.scrubTo(clamped);
+  }
+
+  function handleScrubEnd(ms: number) {
+    const clamped = clampPlayheadMs(ms, startMs, endMs);
+    setCurrentMs(clamped);
+    playerRef.current?.endScrubAndLock(clamped);
   }
 
   async function togglePlayback() {
     const player = playerRef.current;
-    if (!player) return;
+    if (!player || timelineLocked) return;
     if (!player.isPaused()) {
       player.pause();
       return;
@@ -261,6 +324,7 @@ export function EditorView({
             endMs={endMs}
             onTimeUpdate={setCurrentMs}
             onPlayingChange={setPlaying}
+            onSeekingChange={setTimelineLocked}
             onError={setError}
             onDurationChange={handleVideoDuration}
             onMissingFile={() => {
@@ -277,6 +341,7 @@ export function EditorView({
               className="icon-button"
               title={playing ? "Pause" : "Play"}
               aria-label={playing ? "Pause" : "Play"}
+              disabled={timelineLocked}
               onClick={() => void togglePlayback()}
             >
               {playing ? <PauseIcon size={20} /> : <PlayIcon size={20} />}
@@ -285,25 +350,27 @@ export function EditorView({
               {formatTimestamp(currentMs)}
             </span>
             <span className="muted editor__transport-range">
-              {formatTimestamp(startMs)} – {formatTimestamp(endMs)}
+              {formatTimestamp(timelineStartMs)} – {formatTimestamp(timelineEndMs)}
             </span>
           </div>
           <Timeline
             durationMs={timelineDurationMs}
-            startMs={startMs}
-            endMs={endMs}
+            startMs={timelineStartMs}
+            endMs={timelineEndMs}
             currentMs={currentMs}
-            onStartChange={(ms) => {
-              setStartMs(ms);
-              seekTo(ms, ms, endMs);
+            disabled={timelineLocked}
+            onStartChange={previewStartTrim}
+            onEndChange={previewEndTrim}
+            onStartCommit={(ms) => {
+              commitTrimRange(ms, draftEndMs ?? endMs);
             }}
-            onEndChange={(ms) => {
-              setEndMs(ms);
-              if (currentMs > ms) {
-                seekTo(ms, startMs, ms);
-              }
+            onEndCommit={(ms) => {
+              commitTrimRange(draftStartMs ?? startMs, ms);
             }}
-            onSeek={seekTo}
+            onSeekClick={handleSeekClick}
+            onScrubStart={() => playerRef.current?.beginScrub()}
+            onScrub={scrubTo}
+            onScrubEnd={handleScrubEnd}
           />
 
           <div className="editor__actions">
