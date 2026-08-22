@@ -44,7 +44,11 @@ export function resolveCopyPath(
 }
 
 export function rescanLibrary() {
-  return invoke<number>("rescan_library");
+  return invoke<void>("rescan_library");
+}
+
+export function scanFolder(folderPath: string) {
+  return invoke<void>("scan_folder", { folderPath });
 }
 
 export function checkTools() {

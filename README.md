@@ -52,6 +52,10 @@ npm run build:all      # full production build (or ./scripts/build-all.sh)
 4. Open a clip to trim or compress (**create a copy** or replace the original).
 5. Closing the window hides to the tray; use **Quit** in the tray menu to exit.
 
+## Logs
+
+Backend logs are written daily under the app data folder (`logs/replaybox.log.YYYY-MM-DD`). See **[docs/BUILD.md — Logging](docs/BUILD.md#logging)** for paths per platform and how to change verbosity with `RUST_LOG`.
+
 ## Stack
 
 Tauri 2 · React / TypeScript · FFmpeg · SQLite — **Linux**

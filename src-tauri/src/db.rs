@@ -42,6 +42,7 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
 
         CREATE INDEX IF NOT EXISTS idx_recordings_session ON recordings(session_id);
         CREATE INDEX IF NOT EXISTS idx_recordings_modified ON recordings(modified_at);
+        CREATE INDEX IF NOT EXISTS idx_recordings_dir ON recordings(dir);
         ",
     )
     .map_err(|e| e.to_string())?;
@@ -135,6 +136,29 @@ pub fn list_recordings(conn: &Connection, query: Option<&str>) -> Result<Vec<Rec
 
     let rows = stmt
         .query_map(params![query], map_recording)
+        .map_err(|e| e.to_string())?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn list_recordings_under_dir(
+    conn: &Connection,
+    dir_prefix: &str,
+) -> Result<Vec<Recording>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, path, filename, dir, size_bytes, duration_ms, width, height,
+                    video_codec, audio_codec, is_vfr, created_at, modified_at,
+                    thumbnail_path, session_id, indexed_at
+             FROM recordings
+             WHERE dir = ?1 OR dir LIKE ?1 || '/%'
+             ORDER BY COALESCE(modified_at, indexed_at) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![dir_prefix], map_recording)
         .map_err(|e| e.to_string())?;
 
     rows.collect::<Result<Vec<_>, _>>()

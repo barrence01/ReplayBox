@@ -18,7 +18,9 @@ interface Props {
   recordings: Recording[];
   onOpen: (recording: Recording) => void;
   onRescan: () => Promise<void>;
-  onRefresh: () => Promise<void>;
+  onScanFolder: (folderPath: string) => Promise<void>;
+  fullScanning: boolean;
+  folderScanningPath: string | null;
 }
 
 export function LibraryView({
@@ -26,10 +28,11 @@ export function LibraryView({
   recordings,
   onOpen,
   onRescan,
-  onRefresh,
+  onScanFolder,
+  fullScanning,
+  folderScanningPath,
 }: Props) {
   const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<GameFolder | null>(null);
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
 
@@ -75,6 +78,11 @@ export function LibraryView({
     return sortRecordings(filtered, sortOrder);
   }, [selectedFolder, recordings, query, watchDir, sortOrder]);
 
+  const folderScanning =
+    selectedFolder !== null &&
+    folderScanningPath !== null &&
+    folderScanningPath === selectedFolder.path;
+
   return (
     <section className="view">
       <header className="view__header">
@@ -93,14 +101,20 @@ export function LibraryView({
             {selectedFolder && (
               <>
                 <span className="breadcrumb__sep">/</span>
-                <span>{selectedFolder.name}</span>
+                <span className="breadcrumb__current" title={selectedFolder.name}>
+                  {selectedFolder.name}
+                </span>
               </>
             )}
           </nav>
-          <h1>{selectedFolder ? selectedFolder.name : "Library"}</h1>
+          <h1 title={selectedFolder ? selectedFolder.name : undefined}>
+            {selectedFolder ? selectedFolder.name : "Library"}
+          </h1>
           <p>
             {selectedFolder
-              ? "Recordings in this game folder."
+              ? folderScanning
+                ? "Updating recordings in this folder…"
+                : "Recordings in this game folder."
               : "Game folders under the watch directory."}
           </p>
         </div>
@@ -126,17 +140,10 @@ export function LibraryView({
           />
           <button
             type="button"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await onRescan();
-              } finally {
-                setBusy(false);
-              }
-            }}
+            disabled={fullScanning}
+            onClick={() => void onRescan()}
           >
-            {busy ? "Scanning…" : "Rescan"}
+            {fullScanning ? "Scanning…" : "Rescan"}
           </button>
         </div>
       </header>
@@ -155,7 +162,7 @@ export function LibraryView({
                 onOpen={(f) => {
                   setSelectedFolder(f);
                   setQuery("");
-                  void onRefresh();
+                  void onScanFolder(f.path);
                 }}
               />
             ))}

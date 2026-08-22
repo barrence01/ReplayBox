@@ -2,6 +2,7 @@ mod catalog;
 mod commands;
 mod db;
 mod ffmpeg;
+mod logging;
 mod media_server;
 mod models;
 mod settings;
@@ -15,7 +16,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, RunEvent, WindowEvent,
+    Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -75,6 +76,7 @@ pub fn run() {
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&app_data)?;
             std::fs::create_dir_all(thumbs_dir(&app_data))?;
+            logging::init_logging(&app_data)?;
 
             let mut settings = Settings::load(&settings_path(&app_data));
             if settings.ffmpeg_path.trim() == "ffmpeg" {
@@ -92,36 +94,32 @@ pub fn run() {
                 Ok(url) => {
                     *state.media_base_url.lock() = Some(url);
                 }
-                Err(e) => eprintln!("media server failed to start: {e}"),
+                Err(e) => tracing::error!("media server failed to start: {e}"),
             }
 
             app.manage(state);
 
             if let Err(e) = setup_tray(app.handle()) {
-                eprintln!("tray setup failed: {e}");
+                tracing::error!("tray setup failed: {e}");
             }
 
             {
                 let state = app.state::<Arc<AppState>>();
                 let launch = state.settings.lock().launch_on_startup;
                 if let Err(e) = commands::sync_autostart_on_boot(app.handle(), launch) {
-                    eprintln!("autostart sync: {e}");
+                    tracing::warn!("autostart sync: {e}");
                 }
             }
 
             let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let state = handle.state::<Arc<AppState>>();
-                let mut settings = state.settings.lock().clone();
-                settings.ffmpeg_path = state.ffmpeg_bin();
-                settings.ffprobe_path = state.ffprobe_bin();
-                if ffmpeg::binary_available(&settings.ffprobe_path) {
-                    let conn = state.db.lock();
-                    let _ = catalog::scan_library(&conn, &settings, &state.app_data);
-                    drop(conn);
-                    let _ = handle.emit("catalog-updated", ());
-                }
-            });
+            let state = handle.state::<Arc<AppState>>().inner().clone();
+            if ffmpeg::binary_available(&state.ffprobe_bin()) {
+                let _ = commands::spawn_catalog_scan(
+                    handle,
+                    state,
+                    commands::ScanKind::Full,
+                );
+            }
 
             Ok(())
         })
@@ -135,6 +133,7 @@ pub fn run() {
             commands::delete_recording,
             commands::resolve_copy_path,
             commands::rescan_library,
+            commands::scan_folder,
             commands::check_tools,
             commands::nvenc_available,
             commands::resolved_tool_paths,

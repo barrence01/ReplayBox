@@ -7,9 +7,17 @@ import {
   getSettings,
   listRecordings,
   rescanLibrary,
+  scanFolder,
   updateSettings,
 } from "./lib/api";
-import type { JobStatus, Recording, Settings, ViewId } from "./types";
+import type {
+  CatalogScanFinished,
+  CatalogScanStarted,
+  JobStatus,
+  Recording,
+  Settings,
+  ViewId,
+} from "./types";
 import { LibraryView } from "./views/LibraryView";
 import { SessionView } from "./views/SessionView";
 import { EditorView } from "./views/EditorView";
@@ -30,6 +38,10 @@ function App() {
   const [tools, setTools] = useState({ ffmpeg: false, ffprobe: false });
   const [banner, setBanner] = useState<string | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
+  const [fullScanning, setFullScanning] = useState(false);
+  const [folderScanningPath, setFolderScanningPath] = useState<string | null>(
+    null,
+  );
 
   const refreshLibrary = useCallback(async () => {
     const list = await listRecordings();
@@ -58,6 +70,27 @@ function App() {
         void getRecording(selected.id).then((r) => {
           if (r) setSelected(r);
         });
+      }
+    }).then((u) => unsubs.push(u));
+
+    listen<CatalogScanStarted>("catalog-scan-started", (e) => {
+      if (e.payload.kind === "full") {
+        setFullScanning(true);
+      } else if (e.payload.folderPath) {
+        setFolderScanningPath(e.payload.folderPath);
+      }
+    }).then((u) => unsubs.push(u));
+
+    listen<CatalogScanFinished>("catalog-scan-finished", (e) => {
+      if (e.payload.kind === "full") {
+        setFullScanning(false);
+      } else if (e.payload.folderPath) {
+        setFolderScanningPath((current) =>
+          current === e.payload.folderPath ? null : current,
+        );
+      }
+      if (e.payload.status === "error" && e.payload.message) {
+        setBanner(e.payload.message);
       }
     }).then((u) => unsubs.push(u));
 
@@ -151,10 +184,21 @@ function App() {
             watchDir={settings.watchDir}
             recordings={recordings}
             onOpen={openRecording}
-            onRefresh={refreshLibrary}
+            fullScanning={fullScanning}
+            folderScanningPath={folderScanningPath}
             onRescan={async () => {
-              await rescanLibrary();
-              await refreshLibrary();
+              try {
+                await rescanLibrary();
+              } catch (e) {
+                setBanner(String(e));
+              }
+            }}
+            onScanFolder={async (folderPath) => {
+              try {
+                await scanFolder(folderPath);
+              } catch (e) {
+                setBanner(String(e));
+              }
             }}
           />
         )}
@@ -181,9 +225,8 @@ function App() {
             onMissingFile={async () => {
               try {
                 await rescanLibrary();
-                await refreshLibrary();
               } catch {
-                await refreshLibrary();
+                /* rescan may fail if ffprobe missing; catalog-updated still fires on finish */
               }
               leaveEditor();
               setBanner(

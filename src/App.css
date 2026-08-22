@@ -304,7 +304,9 @@ select {
 .view__header h1 {
   margin: 0 0 0.25rem;
   font-size: 1.6rem;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .view__header p,
@@ -318,6 +320,7 @@ select {
   display: flex;
   gap: 0.6rem;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .tabs {
@@ -341,6 +344,7 @@ select {
   display: flex;
   align-items: center;
   gap: 0.85rem;
+  min-width: 0;
   text-align: left;
   padding: 0.9rem 1rem;
   background: var(--bg-elevated);
@@ -351,6 +355,12 @@ select {
 .folder-card__icon {
   color: var(--accent);
   flex-shrink: 0;
+}
+
+.folder-card__meta {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .folder-card__name {
@@ -373,6 +383,15 @@ select {
   margin-bottom: 0.35rem;
   font-size: 0.9rem;
   color: var(--muted);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.breadcrumb__current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .breadcrumb__sep {

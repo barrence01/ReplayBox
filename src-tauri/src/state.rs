@@ -2,9 +2,16 @@ use crate::models::JobStatus;
 use crate::settings::Settings;
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[derive(Debug, Default)]
+pub struct ScanState {
+    pub full: bool,
+    pub folders: HashSet<String>,
+}
 
 pub struct AppState {
     pub app_data: PathBuf,
@@ -13,6 +20,7 @@ pub struct AppState {
     pub media_base_url: Mutex<Option<String>>,
     pub db: Mutex<Connection>,
     pub settings: Mutex<Settings>,
+    pub scan_state: Mutex<ScanState>,
     pub jobs: Mutex<HashMap<String, JobStatus>>,
     /// Running ffmpeg PIDs keyed by job id (for cancel).
     pub job_pids: Mutex<HashMap<String, Arc<std::sync::Mutex<Option<u32>>>>>,
@@ -31,6 +39,7 @@ impl AppState {
             media_base_url: Mutex::new(None),
             db: Mutex::new(db),
             settings: Mutex::new(settings),
+            scan_state: Mutex::new(ScanState::default()),
             jobs: Mutex::new(HashMap::new()),
             job_pids: Mutex::new(HashMap::new()),
         })

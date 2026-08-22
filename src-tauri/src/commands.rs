@@ -1,7 +1,10 @@
 use crate::catalog;
 use crate::db;
 use crate::ffmpeg;
-use crate::models::{CompressRequest, CopyPathInfo, JobStatus, Recording, TrimRequest};
+use crate::models::{
+    CatalogScanFinished, CatalogScanStarted, CompressRequest, CopyPathInfo, JobStatus, Recording,
+    TrimRequest,
+};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
 use std::path::{Path, PathBuf};
@@ -10,6 +13,118 @@ use std::thread;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub enum ScanKind {
+    Full,
+    Folder(String),
+}
+
+fn resolved_settings(state: &AppState) -> Result<Settings, String> {
+    let mut settings = state.settings.lock().clone();
+    settings.ffmpeg_path = state.ffmpeg_bin();
+    settings.ffprobe_path = state.ffprobe_bin();
+    Ok(settings)
+}
+
+fn ensure_ffprobe(settings: &Settings) -> Result<(), String> {
+    if !ffmpeg::binary_available(&settings.ffprobe_path) {
+        return Err(format!(
+            "ffprobe not found at '{}'. Run npm run prepare:ffmpeg or set the path in Settings.",
+            settings.ffprobe_path
+        ));
+    }
+    Ok(())
+}
+
+/// Spawn a background catalog scan and emit lifecycle events to the frontend.
+pub fn spawn_catalog_scan(
+    app: AppHandle,
+    state: Arc<AppState>,
+    kind: ScanKind,
+) -> Result<(), String> {
+    let settings = resolved_settings(&state)?;
+    ensure_ffprobe(&settings)?;
+
+    let (event_kind, folder_path) = match &kind {
+        ScanKind::Full => ("full".to_string(), None),
+        ScanKind::Folder(path) => ("folder".to_string(), Some(path.clone())),
+    };
+
+    {
+        let mut scan = state.scan_state.lock();
+        match &kind {
+            ScanKind::Full => {
+                if scan.full {
+                    return Err("A library scan is already in progress".into());
+                }
+                scan.full = true;
+            }
+            ScanKind::Folder(path) => {
+                if scan.full {
+                    tracing::debug!(folder = %path, "ignoring folder scan during full rescan");
+                    return Ok(());
+                }
+                let key = catalog::normalize_dir(path);
+                if scan.folders.contains(&key) {
+                    return Ok(());
+                }
+                scan.folders.insert(key);
+            }
+        }
+    }
+
+    let started = CatalogScanStarted {
+        kind: event_kind.clone(),
+        folder_path: folder_path.clone(),
+    };
+    let _ = app.emit("catalog-scan-started", &started);
+
+    thread::spawn(move || {
+        let result = match &kind {
+            ScanKind::Full => catalog::scan_library(&state, &settings),
+            ScanKind::Folder(path) => catalog::scan_folder(&state, &settings, path),
+        };
+
+        {
+            let mut scan = state.scan_state.lock();
+            match &kind {
+                ScanKind::Full => scan.full = false,
+                ScanKind::Folder(path) => {
+                    scan.folders.remove(&catalog::normalize_dir(path));
+                }
+            }
+        }
+
+        match &result {
+            Ok(count) => {
+                tracing::info!(kind = %event_kind, count = count, "catalog scan finished");
+                let finished = CatalogScanFinished {
+                    kind: event_kind.clone(),
+                    folder_path: folder_path.clone(),
+                    status: "success".into(),
+                    count: Some(*count),
+                    message: None,
+                };
+                let _ = app.emit("catalog-scan-finished", &finished);
+                let _ = app.emit("catalog-updated", ());
+            }
+            Err(e) => {
+                tracing::error!(kind = %event_kind, error = %e, "catalog scan failed");
+                let finished = CatalogScanFinished {
+                    kind: event_kind,
+                    folder_path,
+                    status: "error".into(),
+                    count: None,
+                    message: Some(e.clone()),
+                };
+                let _ = app.emit("catalog-scan-finished", &finished);
+            }
+        }
+    });
+
+    Ok(())
+}
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -147,21 +262,21 @@ pub fn resolve_copy_path(
 }
 
 #[tauri::command]
-pub fn rescan_library(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
-    let settings = {
-        let mut s = state.settings.lock().clone();
-        s.ffmpeg_path = state.ffmpeg_bin();
-        s.ffprobe_path = state.ffprobe_bin();
-        s
-    };
-    if !ffmpeg::binary_available(&settings.ffprobe_path) {
-        return Err(format!(
-            "ffprobe not found at '{}'. Run npm run prepare:ffmpeg or set the path in Settings.",
-            settings.ffprobe_path
-        ));
-    }
-    let conn = state.db.lock();
-    catalog::scan_library(&conn, &settings, &state.app_data)
+pub fn rescan_library(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    spawn_catalog_scan(app, state.inner().clone(), ScanKind::Full)
+}
+
+#[tauri::command]
+pub fn scan_folder(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    folder_path: String,
+) -> Result<(), String> {
+    spawn_catalog_scan(
+        app,
+        state.inner().clone(),
+        ScanKind::Folder(folder_path),
+    )
 }
 
 #[tauri::command]

@@ -59,4 +59,17 @@ export interface JobStatus {
   outputPath: string | null;
 }
 
+export interface CatalogScanStarted {
+  kind: "full" | "folder";
+  folderPath?: string;
+}
+
+export interface CatalogScanFinished {
+  kind: "full" | "folder";
+  folderPath?: string;
+  status: "success" | "error";
+  count?: number;
+  message?: string;
+}
+
 export type ViewId = "library" | "session" | "editor" | "settings";

@@ -52,7 +52,33 @@ On process start, ReplayBox:
 1. Serves the UI from the last SQLite catalog (cache)
 2. Runs `scan_library` asynchronously and emits `catalog-updated` when finished
 
-There is no continuous folder watcher. Use **Rescan** in the Library (or restart the app) to pick up new files. Closing the window hides to the system tray without re-indexing.
+There is no continuous folder watcher. Use **Rescan** in the Library (or restart the app) to pick up new files. Opening a game folder runs a scoped background scan for that folder. Closing the window hides to the system tray without re-indexing.
+
+Rescan and folder scans run asynchronously; the UI listens for `catalog-scan-started` / `catalog-scan-finished` and refreshes on `catalog-updated`.
+
+## Logging
+
+ReplayBox writes backend logs under the Tauri app data directory:
+
+| Platform | Log directory |
+|----------|----------------|
+| Linux | `~/.local/share/com.williambarrence.replaybox/logs/` |
+| macOS | `~/Library/Application Support/com.williambarrence.replaybox/logs/` |
+| Windows | `%APPDATA%\com.williambarrence.replaybox\logs\` |
+
+- **Rotation:** one file per day, named `replaybox.log.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
+- **Default levels:** `info` globally, `debug` for the ReplayBox crate (`info,replaybox=debug`).
+- **Override:** set `RUST_LOG` before starting the app, for example `RUST_LOG=debug npm run tauri:dev`.
+- **Debug builds:** logs go to the daily file and to stderr.
+- **Release builds:** logs go to the daily file only.
+
+Typical entries include catalog scan start/finish, skipped unchanged files during indexing, media server errors, and tray or autostart setup failures.
+
+To inspect today's log on Linux:
+
+```bash
+tail -f ~/.local/share/com.williambarrence.replaybox/logs/replaybox.log.$(date +%F)
+```
 
 ## System tray
 

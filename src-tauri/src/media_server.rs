@@ -19,7 +19,7 @@ pub fn start(state: Arc<AppState>) -> Result<String, String> {
     thread::spawn(move || {
         for request in server.incoming_requests() {
             if let Err(e) = handle_request(&state, request) {
-                eprintln!("media server error: {e}");
+                tracing::error!("media server error: {e}");
             }
         }
     });

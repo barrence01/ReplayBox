@@ -60,6 +60,10 @@ pub fn thumbs_dir(app_data: &Path) -> PathBuf {
     app_data.join("thumbnails")
 }
 
+pub fn logs_dir(app_data: &Path) -> PathBuf {
+    app_data.join("logs")
+}
+
 /// Ensure the watch folder exists, is a directory, and is readable.
 pub fn validate_watch_dir(path: &str) -> Result<(), String> {
     let trimmed = path.trim();
