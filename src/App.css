@@ -329,9 +329,21 @@ select {
 }
 
 .queue-row__status,
-.queue-row__time {
+.queue-row__time,
+.queue-row__finished-at {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.queue-row__hint {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.85;
+}
+
+.queue-subsection__see-more {
+  margin-top: 0.55rem;
 }
 
 .queue-row__actions {
@@ -376,6 +388,20 @@ select {
   border-radius: var(--radius);
   padding: 1.25rem 1.35rem;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.modal--queue {
+  width: min(560px, 100%);
+  max-height: min(80vh, 40rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal--queue__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin-bottom: 1rem;
 }
 
 .modal h2 {

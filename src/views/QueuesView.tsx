@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import type { JobStatus } from "../types";
+import { FinishedJobsModal } from "../components/FinishedJobsModal";
 import {
+  FINISHED_VISIBLE_LIMIT,
   formatJobElapsed,
+  formatJobFinishedAt,
   isActiveJob,
   isTerminalJob,
   queuePosition,
+  sortFinishedJobs,
   statusLabel,
 } from "../lib/queueHelpers";
 
@@ -21,6 +25,10 @@ interface Props {
 
 function displayName(job: JobStatus): string {
   return job.sourceFilename || job.outputPath?.split(/[/\\]/).pop() || job.id;
+}
+
+function isPreviewJob(job: JobStatus): boolean {
+  return job.kind === "preview";
 }
 
 function QueueRow({
@@ -42,6 +50,7 @@ function QueueRow({
   const position = queued ? queuePosition(jobs, job.id) : null;
   const percent = Math.round(Math.min(Math.max(job.progress, 0), 1) * 100);
   const elapsed = formatJobElapsed(job, nowMs);
+  const finishedAtLabel = terminal ? formatJobFinishedAt(job.finishedAt) : null;
 
   return (
     <li className={`queue-row queue-row--${job.status}`}>
@@ -66,7 +75,14 @@ function QueueRow({
           {terminal && statusLabel(job.status)}
           {job.message && terminal ? ` · ${job.message}` : ""}
         </span>
-        <span className="queue-row__time">{elapsed}</span>
+        <span className="queue-row__time" title="Elapsed duration">
+          <span className="queue-row__hint">Elapsed</span> {elapsed}
+        </span>
+        {finishedAtLabel && (
+          <span className="queue-row__finished-at" title="Finished at">
+            <span className="queue-row__hint">Ended</span> {finishedAtLabel}
+          </span>
+        )}
         <div className="queue-row__actions">
           {(queued || processing) && (
             <button
@@ -141,60 +157,105 @@ function JobList({
   );
 }
 
-function QueueSection({
+function ActiveQueueSection({
   title,
   jobs,
   nowMs,
   onCancel,
-  onDismiss,
-  onClearFinished,
 }: {
   title: string;
   jobs: JobStatus[];
   nowMs: number;
   onCancel: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onClearFinished: () => void;
 }) {
   const active = jobs.filter((j) => isActiveJob(j.status));
-  const finished = jobs.filter((j) => isTerminalJob(j.status));
 
   return (
     <section className="queue-section">
       <div className="queue-section__header">
         <h2>{title}</h2>
       </div>
+      <JobList
+        jobs={active}
+        allJobs={jobs}
+        nowMs={nowMs}
+        emptyLabel="No active jobs."
+        onCancel={onCancel}
+        onDismiss={() => undefined}
+      />
+    </section>
+  );
+}
 
-      <div className="queue-subsection">
-        <h3 className="queue-subsection__title">Active</h3>
-        <JobList
-          jobs={active}
-          allJobs={jobs}
-          nowMs={nowMs}
-          emptyLabel="No active jobs."
-          onCancel={onCancel}
-          onDismiss={onDismiss}
-        />
-      </div>
+function GlobalFinishedSection({
+  editJobs,
+  previewJobs,
+  nowMs,
+  onDismissEdit,
+  onDismissPreview,
+  onClearAllFinished,
+}: {
+  editJobs: JobStatus[];
+  previewJobs: JobStatus[];
+  nowMs: number;
+  onDismissEdit: (id: string) => void;
+  onDismissPreview: (id: string) => void;
+  onClearAllFinished: () => void;
+}) {
+  const [showAllFinished, setShowAllFinished] = useState(false);
+  const allJobs = [...editJobs, ...previewJobs];
+  const finished = sortFinishedJobs(allJobs);
+  const visibleFinished = finished.slice(0, FINISHED_VISIBLE_LIMIT);
 
-      <div className="queue-subsection">
-        <div className="queue-subsection__header">
-          <h3 className="queue-subsection__title">Finished</h3>
-          {finished.length > 0 && (
-            <button type="button" className="secondary" onClick={onClearFinished}>
-              Clear finished
-            </button>
-          )}
-        </div>
-        <JobList
-          jobs={finished}
-          allJobs={jobs}
-          nowMs={nowMs}
-          emptyLabel="No finished jobs."
-          onCancel={onCancel}
-          onDismiss={onDismiss}
-        />
+  function dismiss(id: string) {
+    const job = allJobs.find((j) => j.id === id);
+    if (!job) return;
+    if (isPreviewJob(job)) onDismissPreview(id);
+    else onDismissEdit(id);
+  }
+
+  return (
+    <section className="queue-section queue-section--finished">
+      <div className="queue-section__header">
+        <h2>Finished</h2>
+        {finished.length > 0 && (
+          <button type="button" className="secondary" onClick={onClearAllFinished}>
+            Clear finished
+          </button>
+        )}
       </div>
+      <JobList
+        jobs={visibleFinished}
+        allJobs={allJobs}
+        nowMs={nowMs}
+        emptyLabel="No finished jobs."
+        onCancel={() => undefined}
+        onDismiss={dismiss}
+      />
+      {finished.length > FINISHED_VISIBLE_LIMIT && (
+        <button
+          type="button"
+          className="secondary queue-subsection__see-more"
+          onClick={() => setShowAllFinished(true)}
+        >
+          See more ({finished.length})
+        </button>
+      )}
+      {showAllFinished && (
+        <FinishedJobsModal
+          title="Finished jobs"
+          onClose={() => setShowAllFinished(false)}
+        >
+          <JobList
+            jobs={finished}
+            allJobs={allJobs}
+            nowMs={nowMs}
+            emptyLabel="No finished jobs."
+            onCancel={() => undefined}
+            onDismiss={dismiss}
+          />
+        </FinishedJobsModal>
+      )}
     </section>
   );
 }
@@ -217,31 +278,41 @@ export function QueuesView({
     return () => window.clearInterval(id);
   }, []);
 
+  function clearAllFinished() {
+    onClearEditFinished();
+    onClearPreviewFinished();
+  }
+
   return (
     <div className="queues-view">
       <header className="queues-view__header">
         <h1>Queues</h1>
         <p className="muted">
-          Edit jobs share one queue. Preview preparation runs on its own queue.
+          Running tasks are shown here.
         </p>
       </header>
 
-      <QueueSection
+      <ActiveQueueSection
         title="Jobs (Compress / Trim)"
         jobs={editJobs}
         nowMs={nowMs}
         onCancel={onCancelEdit}
-        onDismiss={onDismissEdit}
-        onClearFinished={onClearEditFinished}
       />
 
-      <QueueSection
+      <ActiveQueueSection
         title="Preview"
         jobs={previewJobs}
         nowMs={nowMs}
         onCancel={onCancelPreview}
-        onDismiss={onDismissPreview}
-        onClearFinished={onClearPreviewFinished}
+      />
+
+      <GlobalFinishedSection
+        editJobs={editJobs}
+        previewJobs={previewJobs}
+        nowMs={nowMs}
+        onDismissEdit={onDismissEdit}
+        onDismissPreview={onDismissPreview}
+        onClearAllFinished={clearAllFinished}
       />
     </div>
   );

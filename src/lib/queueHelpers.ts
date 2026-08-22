@@ -12,6 +12,32 @@ export function isTerminalJob(status: string): boolean {
   );
 }
 
+export const FINISHED_VISIBLE_LIMIT = 5;
+
+export function compareFinishedJobs(a: JobStatus, b: JobStatus): number {
+  const aFinished = a.finishedAt ? Date.parse(a.finishedAt) : Number.NaN;
+  const bFinished = b.finishedAt ? Date.parse(b.finishedAt) : Number.NaN;
+  const aHasFinished = !Number.isNaN(aFinished);
+  const bHasFinished = !Number.isNaN(bFinished);
+  if (aHasFinished && bHasFinished) return bFinished - aFinished;
+  if (aHasFinished !== bHasFinished) return aHasFinished ? -1 : 1;
+  return b.queuedAt.localeCompare(a.queuedAt);
+}
+
+export function sortFinishedJobs(jobs: JobStatus[]): JobStatus[] {
+  return jobs.filter((j) => isTerminalJob(j.status)).sort(compareFinishedJobs);
+}
+
+export function formatJobFinishedAt(finishedAt: string | null): string | null {
+  if (!finishedAt) return null;
+  const ms = Date.parse(finishedAt);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function queuePosition(jobs: JobStatus[], jobId: string): number | null {
   const queued = jobs.filter((j) => j.status === "queued");
   const index = queued.findIndex((j) => j.id === jobId);

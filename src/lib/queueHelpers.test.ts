@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { JobStatus } from "../types";
 import {
+  compareFinishedJobs,
   countActive,
   formatElapsed,
   formatJobElapsed,
+  formatJobFinishedAt,
   isActiveJob,
   isTerminalJob,
   mergeJob,
   queuePosition,
+  sortFinishedJobs,
   statusLabel,
 } from "./queueHelpers";
 
@@ -117,5 +120,46 @@ describe("queueHelpers", () => {
         job({ id: "c", status: "completed" }),
       ]),
     ).toEqual({ processing: 1, queued: 1 });
+  });
+
+  it("sorts finished jobs newest first by finishedAt", () => {
+    const sorted = sortFinishedJobs([
+      job({
+        id: "old",
+        status: "completed",
+        finishedAt: "2024-01-01T00:00:10.000Z",
+      }),
+      job({ id: "active", status: "processing" }),
+      job({
+        id: "new",
+        status: "failed",
+        finishedAt: "2024-01-01T00:00:30.000Z",
+      }),
+      job({
+        id: "mid",
+        status: "cancelled",
+        finishedAt: "2024-01-01T00:00:20.000Z",
+      }),
+    ]);
+    expect(sorted.map((j) => j.id)).toEqual(["new", "mid", "old"]);
+  });
+
+  it("compares finished jobs with missing finishedAt last", () => {
+    const withTime = job({
+      id: "a",
+      status: "completed",
+      finishedAt: "2024-01-01T00:00:10.000Z",
+    });
+    const without = job({ id: "b", status: "completed", finishedAt: null });
+    expect(compareFinishedJobs(withTime, without)).toBeLessThan(0);
+    expect(compareFinishedJobs(without, withTime)).toBeGreaterThan(0);
+  });
+
+  it("formats finishedAt as local clock time", () => {
+    const formatted = formatJobFinishedAt("2024-01-01T15:42:00.000Z");
+    expect(formatted).toBeTruthy();
+    expect(formatted).toMatch(/\d/);
+    expect(formatJobFinishedAt(null)).toBeNull();
+    expect(formatJobFinishedAt("not-a-date")).toBeNull();
   });
 });
