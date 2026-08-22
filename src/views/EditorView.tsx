@@ -460,6 +460,10 @@ export function EditorView({
                 value={crf}
                 onChange={(e) => setCrf(Number(e.target.value))}
               />
+              <span className="range-ends hint" aria-hidden="true">
+                <span>Better quality / bigger file</span>
+                <span>Worse quality / smaller file</span>
+              </span>
             </label>
           </div>
         </div>
