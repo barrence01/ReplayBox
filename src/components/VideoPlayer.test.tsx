@@ -84,6 +84,9 @@ describe("VideoPlayer", () => {
 
     const video = container.querySelector("video")!;
     unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled();
     expect(video.getAttribute("src")).toBeNull();

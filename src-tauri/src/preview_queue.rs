@@ -537,6 +537,7 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
 
             if let Some(job) = state.preview_queue.get(&job_id) {
                 let _ = app.emit("preview-updated", job);
+                crate::tray_status::notify_queues_changed(&app);
             }
 
             let started = Instant::now();
@@ -585,6 +586,7 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
 
             if let Some(job) = state.preview_queue.finish_work(&job_id, result) {
                 let _ = app.emit("preview-updated", job);
+                crate::tray_status::notify_queues_changed(&app);
             }
         });
     });

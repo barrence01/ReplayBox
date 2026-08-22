@@ -74,10 +74,15 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
   ) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
-      if (videoRef.current && !node) {
-        releaseVideoElement(videoRef.current);
-      }
+      const prev = videoRef.current;
       videoRef.current = node;
+      if (prev && prev !== node) {
+        queueMicrotask(() => {
+          if (videoRef.current !== prev) {
+            releaseVideoElement(prev);
+          }
+        });
+      }
     }, []);
     const missingNotified = useRef(false);
     const fallbackLevel = useRef(0);
@@ -751,9 +756,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         cancelled = true;
         clearPlaybackTimers();
         clearScrubSeekTimeout();
-        if (videoRef.current) {
-          releaseVideoElement(videoRef.current);
-        }
       };
     }, [recordingId, onError]);
 

@@ -169,15 +169,23 @@ pub fn get_playback_cache_stats(state: State<'_, Arc<AppState>>) -> Result<Playb
 }
 
 #[tauri::command]
-pub fn clear_playback_cache(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheClearResult, String> {
+pub fn clear_playback_cache(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<PlaybackCacheClearResult, String> {
     playback_cache::cancel_all_cache_jobs(&state);
+    crate::tray_status::notify_queues_changed(&app);
     let freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
     Ok(PlaybackCacheClearResult { freed_bytes: freed })
 }
 
 #[tauri::command]
-pub fn clear_all_cache(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheClearResult, String> {
+pub fn clear_all_cache(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<PlaybackCacheClearResult, String> {
     playback_cache::cancel_all_cache_jobs(&state);
+    crate::tray_status::notify_queues_changed(&app);
     let mut freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
     freed += playback_cache::clear_thumbnails_dir(&state.paths.thumbs_dir())?;
     db::clear_all_thumbnail_paths(&state.db.lock())?;
@@ -262,6 +270,7 @@ pub fn delete_recording(
         .cancel_for_recording(&id, Some("Cancelled: recording deleted"))
     {
         let _ = app.emit("preview-updated", job);
+        crate::tray_status::notify_queues_changed(&app);
     }
 
     let recording = {
@@ -461,14 +470,17 @@ fn resolve_playback_info(
         }) {
             CacheJobStatus::Ready { path } => {
                 let path_str = path.to_string_lossy().to_string();
+                crate::tray_status::notify_queues_changed(app);
                 return Ok(playback_info_cache(playback::build_media_url(
                     &base_url, &path_str,
                 )));
             }
             CacheJobStatus::Preparing => {
+                crate::tray_status::notify_queues_changed(app);
                 return Ok(playback_info_preparing(state, &recording.id));
             }
             CacheJobStatus::Failed { message } => {
+                crate::tray_status::notify_queues_changed(app);
                 if strategy == PlaybackStrategy::RemuxAudio && level < 2 && !force {
                     return resolve_playback_info(app, state, recording_id, Some(true), Some(2));
                 }
@@ -531,6 +543,7 @@ pub fn cancel_job(
 ) -> Result<(), String> {
     if let Some(job) = state.edit_jobs.mark_cancelled_if_queued(&job_id) {
         let _ = app.emit("job-updated", job);
+        crate::tray_status::notify_queues_changed(&app);
         return Ok(());
     }
 
@@ -548,6 +561,7 @@ pub fn cancel_job(
         if let Some(job) = state.edit_jobs.mark_cancelled_processing(&job_id) {
             let _ = app.emit("job-updated", job);
         }
+        crate::tray_status::notify_queues_changed(&app);
         return Ok(());
     }
 
@@ -562,6 +576,7 @@ pub fn cancel_preview_job(
 ) -> Result<(), String> {
     let job = state.preview_queue.cancel_job(&job_id)?;
     let _ = app.emit("preview-updated", job);
+    crate::tray_status::notify_queues_changed(&app);
     Ok(())
 }
 
@@ -576,6 +591,7 @@ pub fn cancel_preview_for_recording(
         .cancel_for_recording(&recording_id, None)
     {
         let _ = app.emit("preview-updated", job);
+        crate::tray_status::notify_queues_changed(&app);
     }
     Ok(())
 }
@@ -593,6 +609,7 @@ pub fn set_jobs_paused(
 ) -> Result<bool, String> {
     state.set_jobs_paused(paused);
     let _ = app.emit("jobs-paused-changed", paused);
+    crate::tray_status::notify_queues_changed(&app);
     Ok(paused)
 }
 
@@ -602,6 +619,7 @@ pub fn suspend_for_tray(app: &AppHandle, state: &AppState) {
     for job in state.preview_queue.cancel_all() {
         let _ = app.emit("preview-updated", job);
     }
+    crate::tray_status::notify_queues_changed(app);
     let _ = app.emit("app-to-tray", ());
 }
 
@@ -637,6 +655,7 @@ pub fn cleanup_on_quit(app: &AppHandle, state: &AppState) {
             }
         }
     }
+    crate::tray_status::notify_queues_changed(app);
 }
 
 fn spawn_edit_worker(app: AppHandle, state: Arc<AppState>) {
@@ -647,6 +666,7 @@ fn spawn_edit_worker(app: AppHandle, state: Arc<AppState>) {
             let (job_id, payload) = state.edit_jobs.take_next_work();
             if let Some(job) = state.edit_jobs.snapshot_job(&job_id) {
                 let _ = app.emit("job-updated", job);
+                crate::tray_status::notify_queues_changed(&app);
             }
 
             let child_slot = Arc::new(Mutex::new(None));
@@ -764,6 +784,7 @@ pub fn start_trim(
     spawn_edit_worker(app.clone(), state.inner().clone());
     let job = state.edit_jobs.enqueue(job, payload);
     let _ = app.emit("job-updated", job.clone());
+    crate::tray_status::notify_queues_changed(&app);
     Ok(job)
 }
 
@@ -825,6 +846,7 @@ pub fn start_compress(
     spawn_edit_worker(app.clone(), state.inner().clone());
     let job = state.edit_jobs.enqueue(job, payload);
     let _ = app.emit("job-updated", job.clone());
+    crate::tray_status::notify_queues_changed(&app);
     Ok(job)
 }
 
@@ -960,6 +982,7 @@ fn finalize_job(
         ) {
             let _ = app.emit("job-updated", job);
         }
+        crate::tray_status::notify_queues_changed(app);
         return;
     }
 
@@ -993,4 +1016,5 @@ fn finalize_job(
         let _ = app.emit("job-updated", job);
         let _ = app.emit("catalog-updated", ());
     }
+    crate::tray_status::notify_queues_changed(app);
 }

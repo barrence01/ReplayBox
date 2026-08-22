@@ -14,6 +14,7 @@ mod preview_queue;
 mod settings;
 mod state;
 mod tools;
+mod tray_status;
 
 use settings::{AppPaths, Settings};
 use state::AppState;
@@ -26,6 +27,7 @@ use tauri::{
     AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
+use tray_status::TrayIconState;
 
 struct TrayMenuState {
     pause_item: MenuItem<tauri::Wry>,
@@ -66,6 +68,7 @@ fn toggle_jobs_paused(app: &AppHandle) {
     state.set_jobs_paused(next);
     let _ = app.emit("jobs-paused-changed", next);
     update_pause_menu_label(app);
+    tray_status::notify_queues_changed(app);
 }
 
 fn quit_app(app: &AppHandle) {
@@ -87,7 +90,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
     let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
 
-    let _tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(icon)
         .tooltip("ReplayBox")
         .menu(&menu)
@@ -109,6 +112,8 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+
+    app.manage(StdMutex::new(TrayIconState::new(tray)));
 
     Ok(())
 }

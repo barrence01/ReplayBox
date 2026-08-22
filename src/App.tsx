@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelJob,
@@ -19,6 +19,7 @@ import {
   updateSettings,
 } from "./lib/api";
 import { mergeJob } from "./lib/queueHelpers";
+import { HOME_VIEW, trayPurgePatch } from "./lib/trayUiState";
 import type {
   CatalogScanFinished,
   CatalogScanStarted,
@@ -41,8 +42,8 @@ import "./App.css";
 type ReturnView = Exclude<ViewId, "editor">;
 
 function App() {
-  const [view, setView] = useState<ViewId>("library");
-  const [returnView, setReturnView] = useState<ReturnView>("library");
+  const [view, setView] = useState<ViewId>(HOME_VIEW);
+  const [returnView, setReturnView] = useState<ReturnView>(HOME_VIEW);
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [selected, setSelected] = useState<Recording | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -56,6 +57,16 @@ function App() {
   const [folderScanningPath, setFolderScanningPath] = useState<string | null>(
     null,
   );
+
+  const libraryReadyRef = useRef(libraryReady);
+  useEffect(() => {
+    libraryReadyRef.current = libraryReady;
+  }, [libraryReady]);
+
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const refreshLibrary = useCallback(async () => {
     const list = await listRecordings();
@@ -79,17 +90,38 @@ function App() {
     });
   }, []);
 
-  const goToLibraryHome = useCallback(() => {
+  const goToHome = useCallback(() => {
     setSelected((current) => {
       if (current) {
         releaseEditorResources(current.id);
       }
       return null;
     });
-    setReturnView("library");
-    setView("library");
+    setReturnView(HOME_VIEW);
+    setView(HOME_VIEW);
     setLibraryResetKey((k) => k + 1);
   }, [releaseEditorResources]);
+
+  const purgeUiForTray = useCallback(() => {
+    goToHome();
+    const patch = trayPurgePatch();
+    setLibraryReady(patch.libraryReady);
+    setRecordings(patch.recordings);
+    setEditJobs(patch.editJobs);
+    setPreviewJobs(patch.previewJobs);
+  }, [goToHome]);
+
+  const hydrateUiFromTray = useCallback(async () => {
+    try {
+      const [list] = await Promise.all([listRecordings(), refreshQueues()]);
+      setRecordings(list);
+      setLibraryReady(true);
+    } catch (e) {
+      setBanner(String(e));
+      setLibraryReady(true);
+    }
+    goToHome();
+  }, [goToHome, refreshQueues]);
 
   const navigateTo = useCallback(
     (next: ReturnView) => {
@@ -128,9 +160,13 @@ function App() {
     const unsubs: Array<() => void> = [];
 
     listen("catalog-updated", () => {
+      if (!libraryReadyRef.current) {
+        return;
+      }
       void refreshLibrary();
-      if (selected) {
-        void getRecording(selected.id).then((r) => {
+      const current = selectedRef.current;
+      if (current) {
+        void getRecording(current.id).then((r) => {
           if (r) setSelected(r);
         });
       }
@@ -170,18 +206,17 @@ function App() {
     }).then((u) => unsubs.push(u));
 
     listen("app-to-tray", () => {
-      goToLibraryHome();
-      void refreshQueues();
+      purgeUiForTray();
     }).then((u) => unsubs.push(u));
 
     listen("app-from-tray", () => {
-      goToLibraryHome();
+      void hydrateUiFromTray();
     }).then((u) => unsubs.push(u));
 
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [refreshLibrary, refreshQueues, selected, goToLibraryHome]);
+  }, [refreshLibrary, purgeUiForTray, hydrateUiFromTray]);
 
   useEffect(() => {
     if (view === "queues") {
@@ -226,17 +261,17 @@ function App() {
         <div className="brand">ReplayBox</div>
         <button
           type="button"
-          className={view === "library" ? "active" : ""}
-          onClick={() => navigateTo("library")}
-        >
-          Library
-        </button>
-        <button
-          type="button"
           className={view === "session" ? "active" : ""}
           onClick={() => navigateTo("session")}
         >
           Session
+        </button>
+        <button
+          type="button"
+          className={view === "library" ? "active" : ""}
+          onClick={() => navigateTo("library")}
+        >
+          Library
         </button>
         <button
           type="button"
