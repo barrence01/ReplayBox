@@ -24,6 +24,7 @@ const baseSettings: Settings = {
   compressCrf: 26,
   preferNvenc: true,
   launchOnStartup: false,
+  playbackCacheMaxGb: 5,
 };
 
 describe("SettingsView watch folder access", () => {
@@ -128,5 +129,31 @@ describe("SettingsView watch folder access", () => {
       expect(onSave).toHaveBeenCalledWith(baseSettings);
       expect(screen.getByText("Settings saved.")).toBeTruthy();
     });
+  });
+
+  it("blocks save when preview cache limit is out of range", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    checkWatchDirMock.mockResolvedValue(undefined);
+
+    render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={onSave}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton");
+    await user.clear(input);
+    await user.type(input, "0");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Preview cache limit must be between 1 and 100 GB/i),
+      ).toBeTruthy();
+    });
+    expect(onSave).not.toHaveBeenCalled();
   });
 });

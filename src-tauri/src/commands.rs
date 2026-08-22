@@ -2,9 +2,11 @@ use crate::catalog;
 use crate::db;
 use crate::ffmpeg;
 use crate::models::{
-    CatalogScanFinished, CatalogScanStarted, CompressRequest, CopyPathInfo, JobStatus, Recording,
-    TrimRequest,
+    CatalogScanFinished, CatalogScanStarted, CompressRequest, CopyPathInfo, JobStatus, PlaybackInfo,
+    Recording, TrimRequest,
 };
+use crate::playback::{self, PlaybackStrategy};
+use crate::playback_cache::{self, CacheJobStatus};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
 use std::path::{Path, PathBuf};
@@ -144,10 +146,15 @@ pub fn update_settings(
     settings: Settings,
 ) -> Result<Settings, String> {
     settings::validate_watch_dir(&settings.watch_dir)?;
+    settings::validate_playback_cache_max_gb(settings.playback_cache_max_gb)?;
     let path = state.paths.settings_path();
     settings.save(&path)?;
     *state.settings.lock() = settings.clone();
     sync_autostart(&app, settings.launch_on_startup)?;
+    playback_cache::run_cache_cleanup(
+        &state.paths.playback_cache_dir(),
+        &playback_cache::CleanupPolicy::from_settings(&settings),
+    );
     Ok(settings)
 }
 
@@ -298,12 +305,77 @@ pub fn resolved_tool_paths(state: State<'_, Arc<AppState>>) -> (String, String) 
 }
 
 #[tauri::command]
-pub fn get_media_base_url(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    state
+pub fn get_playback_info(
+    state: State<'_, Arc<AppState>>,
+    recording_id: String,
+    force_fallback: Option<bool>,
+    fallback_level: Option<u8>,
+) -> Result<PlaybackInfo, String> {
+    resolve_playback_info(state.inner(), &recording_id, force_fallback, fallback_level)
+}
+
+fn resolve_playback_info(
+    state: &AppState,
+    recording_id: &str,
+    force_fallback: Option<bool>,
+    fallback_level: Option<u8>,
+) -> Result<PlaybackInfo, String> {
+    let recording = db::get_recording_by_id(&state.db.lock(), recording_id)?
+        .ok_or_else(|| "Recording not found".to_string())?;
+
+    let base_url = state
         .media_base_url
         .lock()
         .clone()
-        .ok_or_else(|| "Media server is not running".into())
+        .ok_or_else(|| "Media server is not running".to_string())?;
+
+    let force = force_fallback.unwrap_or(false);
+    let level = fallback_level.unwrap_or(1);
+    let strategy = playback::playback_strategy(&recording, force, level);
+    let cache_dir = state.paths.playback_cache_dir();
+    let source = Path::new(&recording.path);
+
+    if strategy != PlaybackStrategy::Direct {
+        if let Some(cached) =
+            playback_cache::is_cache_valid(&cache_dir, &recording.id, source, strategy)
+        {
+            let path = cached.to_string_lossy().to_string();
+            return Ok(PlaybackInfo {
+                url: playback::build_media_url(&base_url, &path),
+                mode: "cache".into(),
+            });
+        }
+
+        match playback_cache::ensure_cache_job(state, &recording, strategy) {
+            CacheJobStatus::Ready { path } => {
+                let path_str = path.to_string_lossy().to_string();
+                return Ok(PlaybackInfo {
+                    url: playback::build_media_url(&base_url, &path_str),
+                    mode: "cache".into(),
+                });
+            }
+            CacheJobStatus::Preparing => {
+                return Ok(PlaybackInfo {
+                    url: String::new(),
+                    mode: "preparing".into(),
+                });
+            }
+            CacheJobStatus::Failed { message } => {
+                if strategy == PlaybackStrategy::RemuxAudio
+                    && level < 2
+                    && !force
+                {
+                    return resolve_playback_info(state, recording_id, Some(true), Some(2));
+                }
+                return Err(format!("Preview preparation failed: {message}"));
+            }
+        }
+    }
+
+    Ok(PlaybackInfo {
+        url: playback::build_media_url(&base_url, &recording.path),
+        mode: "direct".into(),
+    })
 }
 
 #[tauri::command]

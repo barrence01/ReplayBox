@@ -3,6 +3,7 @@ import type {
   CompressRequest,
   CopyPathInfo,
   JobStatus,
+  PlaybackInfo,
   Recording,
   Settings,
   TrimRequest,
@@ -59,8 +60,18 @@ export function resolvedToolPaths() {
   return invoke<[string, string]>("resolved_tool_paths");
 }
 
-export function getMediaBaseUrl() {
-  return invoke<string>("get_media_base_url");
+export function getPlaybackInfo(
+  recordingId: string,
+  options?: {
+    forceFallback?: boolean;
+    fallbackLevel?: 1 | 2;
+  },
+) {
+  return invoke<PlaybackInfo>("get_playback_info", {
+    recordingId,
+    forceFallback: options?.forceFallback ?? null,
+    fallbackLevel: options?.fallbackLevel ?? null,
+  });
 }
 
 export function nvencAvailable() {

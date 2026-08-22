@@ -53,6 +53,12 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       return;
     }
 
+    if (draft.playbackCacheMaxGb < 1 || draft.playbackCacheMaxGb > 100) {
+      setMessage("Preview cache limit must be between 1 and 100 GB.");
+      setMessageIsError(true);
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
     setMessageIsError(false);
@@ -74,7 +80,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       <header className="view__header">
         <div>
           <h1>Settings</h1>
-          <p>Watch folder, FFmpeg tools, and startup options.</p>
+          <p>Watch folder, FFmpeg tools, preview cache, and startup options.</p>
         </div>
       </header>
 
@@ -149,6 +155,30 @@ export function SettingsView({ settings, tools, onSave }: Props) {
               }
             />
             Prefer NVENC when available
+          </label>
+        </section>
+
+        <section className="settings-section">
+          <h2>Preview cache</h2>
+          <label className="settings-field">
+            Maximum cache size (GB)
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={draft.playbackCacheMaxGb}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  playbackCacheMaxGb: Number(e.target.value),
+                }))
+              }
+            />
+            <span className="settings-field-meta hint">
+              Stored in ~/.cache/org.replaybox/playback/. Maximum disk space
+              for preview cache. Entries older than 1 day are removed
+              automatically.
+            </span>
           </label>
         </section>
 

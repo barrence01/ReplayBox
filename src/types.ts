@@ -1,3 +1,8 @@
+export interface PlaybackInfo {
+  url: string;
+  mode: "direct" | "cache" | "preparing";
+}
+
 export interface Recording {
   id: string;
   path: string;
@@ -24,6 +29,7 @@ export interface Settings {
   compressCrf: number;
   preferNvenc: boolean;
   launchOnStartup: boolean;
+  playbackCacheMaxGb: number;
 }
 
 export interface TrimRequest {

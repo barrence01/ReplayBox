@@ -5,6 +5,8 @@ mod ffmpeg;
 mod logging;
 mod media_server;
 mod models;
+mod playback;
+mod playback_cache;
 mod settings;
 mod state;
 mod tools;
@@ -74,6 +76,7 @@ pub fn run() {
             std::fs::create_dir_all(&paths.config_dir)?;
             std::fs::create_dir_all(&paths.data_dir)?;
             std::fs::create_dir_all(&paths.cache_dir)?;
+            std::fs::create_dir_all(&paths.playback_cache_dir())?;
             logging::init_logging(&paths.log_dir)?;
 
             let mut settings = Settings::load(&paths.settings_path());
@@ -86,7 +89,11 @@ pub fn run() {
 
             let resource_dir = tools::discover_resource_dir(app.path().resource_dir().ok());
             let conn = db::open_db(&paths.db_path())?;
-            let state = AppState::new(paths, resource_dir, conn, settings);
+            let state = AppState::new(paths.clone(), resource_dir, conn, settings.clone());
+            playback_cache::run_cache_cleanup(
+                &paths.playback_cache_dir(),
+                &playback_cache::CleanupPolicy::from_settings(&settings),
+            );
 
             match media_server::start(state.clone()) {
                 Ok(url) => {
@@ -135,7 +142,7 @@ pub fn run() {
             commands::check_tools,
             commands::nvenc_available,
             commands::resolved_tool_paths,
-            commands::get_media_base_url,
+            commands::get_playback_info,
             commands::get_job_status,
             commands::cancel_job,
             commands::start_trim,

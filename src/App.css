@@ -492,6 +492,11 @@ select {
   min-width: 0;
 }
 
+.video-player {
+  position: relative;
+}
+
+.video-player video,
 .editor__player video {
   width: 100%;
   max-height: 52vh;
@@ -499,6 +504,12 @@ select {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   cursor: pointer;
+  display: block;
+}
+
+.video-player__status {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
 }
 
 .editor__transport {

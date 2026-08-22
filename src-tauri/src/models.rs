@@ -80,6 +80,14 @@ pub struct CatalogScanFinished {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlaybackInfo {
+    pub url: String,
+    /// `direct`, `cache`, or `preparing`
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JobStatus {
     pub id: String,
     pub kind: String,

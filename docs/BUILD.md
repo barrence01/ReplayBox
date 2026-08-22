@@ -66,12 +66,15 @@ Application files are stored under XDG directories resolved by Tauri `PathResolv
 | Data (`replaybox.db`) | `~/.local/share/org.replaybox/` |
 | Logs | `~/.local/share/org.replaybox/logs/` |
 | Cache (thumbnails) | `~/.cache/org.replaybox/thumbnails/` |
+| Cache (preview / playback) | `~/.cache/org.replaybox/playback/` |
+
+The **preview cache** holds remuxed or transcoded MP4 copies used for in-app playback when the original file is not WebView-friendly. Each entry is `{recordingId}.mp4` with a `{recordingId}.json` sidecar (source mtime/size and strategy). Original recordings stay in the watch folder. Entries older than 24 hours are removed automatically; total size is capped by **Preview cache** in Settings (default 5 GB).
 
 Logs are created when the app **runs** (dev or installed binary), not by `./scripts/build-all.sh` alone.
 
 - **Rotation:** one log file per day, named `replaybox.log.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
 - **Retention:** at most 7 days of rotated log files; older files are removed on startup.
-- **Default levels:** `info` globally, `debug` for the ReplayBox crate (`info,replaybox=debug`).
+- **Default level:** `info`.
 - **Override:** set `RUST_LOG` before starting the app, for example `RUST_LOG=debug npm run tauri:dev`.
 - **Debug builds:** logs go to the daily file and to stderr.
 - **Release builds:** logs go to the daily file only.

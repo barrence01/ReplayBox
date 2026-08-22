@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::thread;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
+const RANGE_CHUNK_SIZE: usize = 256 * 1024;
+
 /// Starts a localhost HTTP server that serves media with Range support for `<video>`.
 pub fn start(state: Arc<AppState>) -> Result<String, String> {
     let server = Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -17,9 +19,12 @@ pub fn start(state: Arc<AppState>) -> Result<String, String> {
 
     thread::spawn(move || {
         for request in server.incoming_requests() {
-            if let Err(e) = handle_request(&state, request) {
-                tracing::error!("media server error: {e}");
-            }
+            let state = state.clone();
+            thread::spawn(move || {
+                if let Err(e) = handle_request(&state, request) {
+                    tracing::error!("media server error: {e}");
+                }
+            });
         }
     });
 
@@ -37,11 +42,20 @@ fn handle_request(
 
     let url = request.url().to_string();
     let (path_part, query) = split_url(&url);
-    if path_part != "/media" {
-        let _ = request.respond(Response::empty(StatusCode(404)));
-        return Ok(());
+    match path_part {
+        "/media" => handle_media(state, request, query),
+        _ => {
+            let _ = request.respond(Response::empty(StatusCode(404)));
+            Ok(())
+        }
     }
+}
 
+fn handle_media(
+    state: &AppState,
+    request: tiny_http::Request,
+    query: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(raw_path) = query_param(query, "path") else {
         let _ = request.respond(Response::from_string("missing path").with_status_code(400));
         return Ok(());
@@ -58,6 +72,10 @@ fn handle_request(
             return Ok(());
         }
     };
+
+    if is_playback_cache_path(state, &allowed) {
+        tracing::debug!(path = %allowed.display(), "serving playback cache");
+    }
 
     serve_file(request, &allowed)
 }
@@ -82,7 +100,15 @@ fn query_param(query: Option<&str>, key: &str) -> Option<String> {
     None
 }
 
-/// Canonicalize and ensure the file is under watch_dir or the thumbnails directory.
+fn is_playback_cache_path(state: &AppState, path: &Path) -> bool {
+    let cache_dir = state.paths.playback_cache_dir();
+    cache_dir
+        .canonicalize()
+        .ok()
+        .is_some_and(|root| path.starts_with(&root))
+}
+
+/// Canonicalize and ensure the file is under watch_dir, thumbnails, or playback cache.
 fn resolve_allowed_path(state: &AppState, raw: &str) -> Result<PathBuf, String> {
     let candidate = PathBuf::from(raw);
     if !candidate.is_absolute() {
@@ -99,6 +125,8 @@ fn resolve_allowed_path(state: &AppState, raw: &str) -> Result<PathBuf, String> 
     let watch_canon = watch.canonicalize().ok();
     let thumbs = state.paths.thumbs_dir();
     let thumbs_canon = thumbs.canonicalize().ok();
+    let playback = state.paths.playback_cache_dir();
+    let playback_canon = playback.canonicalize().ok();
 
     let under_watch = watch_canon
         .as_ref()
@@ -108,8 +136,12 @@ fn resolve_allowed_path(state: &AppState, raw: &str) -> Result<PathBuf, String> 
         .as_ref()
         .map(|root| canonical.starts_with(root))
         .unwrap_or(false);
+    let under_playback = playback_canon
+        .as_ref()
+        .map(|root| canonical.starts_with(root))
+        .unwrap_or(false);
 
-    if under_watch || under_thumbs {
+    if under_watch || under_thumbs || under_playback {
         Ok(canonical)
     } else {
         Err("path outside allowed roots".into())
@@ -136,6 +168,23 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
+struct RangeFileReader {
+    file: File,
+    remaining: u64,
+}
+
+impl Read for RangeFileReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        let max_read = buf.len().min(self.remaining as usize).min(RANGE_CHUNK_SIZE);
+        let n = self.file.read(&mut buf[..max_read])?;
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+}
+
 fn serve_file(
     request: tiny_http::Request,
     path: &Path,
@@ -154,29 +203,34 @@ fn serve_file(
             let len = end - start + 1;
             let mut file = file;
             file.seek(SeekFrom::Start(start))?;
-            let mut buf = vec![0u8; len as usize];
-            file.read_exact(&mut buf)?;
+            let reader = RangeFileReader {
+                file,
+                remaining: len,
+            };
 
-            let mut response = Response::from_data(buf).with_status_code(StatusCode(206));
-            response.add_header(
-                Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap(),
-            );
-            response.add_header(
-                Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap(),
-            );
-            let content_range = format!("bytes {start}-{end}/{file_len}");
-            response.add_header(
-                Header::from_bytes(&b"Content-Range"[..], content_range.as_bytes()).unwrap(),
-            );
-            response.add_header(
-                Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+            let response = Response::new(
+                StatusCode(206),
+                vec![
+                    Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap(),
+                    Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap(),
+                    Header::from_bytes(&b"Content-Length"[..], len.to_string().as_bytes())
+                        .unwrap(),
+                    Header::from_bytes(
+                        &b"Content-Range"[..],
+                        format!("bytes {start}-{end}/{file_len}").as_bytes(),
+                    )
+                    .unwrap(),
+                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                ],
+                reader,
+                Some(len as usize),
+                None,
             );
             request.respond(response)?;
             return Ok(());
         }
     }
 
-    // Full body: stream from disk (avoid loading large recordings into RAM).
     let mut response = Response::from_file(file).with_status_code(StatusCode(200));
     response.add_header(Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap());
     response.add_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
@@ -192,7 +246,6 @@ fn parse_bytes_range(header: &str, file_len: u64) -> Option<(u64, u64)> {
     let rest = header.strip_prefix("bytes=")?;
     let (start_s, end_s) = rest.split_once('-')?;
     if start_s.is_empty() {
-        // suffix: bytes=-N
         let n: u64 = end_s.parse().ok()?;
         if n == 0 || file_len == 0 {
             return None;
@@ -214,7 +267,9 @@ fn parse_bytes_range(header: &str, file_len: u64) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_bytes_range;
+    use super::{parse_bytes_range, RangeFileReader};
+    use std::io::{Read, Write};
+    use tempfile::NamedTempFile;
 
     #[test]
     fn range_start_end() {
@@ -229,5 +284,23 @@ mod tests {
     #[test]
     fn range_suffix() {
         assert_eq!(parse_bytes_range("bytes=-10", 100), Some((90, 99)));
+    }
+
+    #[test]
+    fn range_reader_streams_in_chunks() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let data: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        tmp.write_all(&data).unwrap();
+
+        let file = tmp.reopen().unwrap();
+        let mut reader = RangeFileReader {
+            file,
+            remaining: 8_000,
+        };
+
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 8_000);
+        assert_eq!(&out[..10], &data[..10]);
     }
 }

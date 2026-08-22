@@ -39,6 +39,17 @@ impl AppPaths {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir.join("thumbnails")
     }
+
+    pub fn playback_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("playback")
+    }
+}
+
+/// Default maximum preview cache size in gigabytes.
+pub const DEFAULT_PLAYBACK_CACHE_MAX_GB: u32 = 5;
+
+pub fn default_playback_cache_max_gb() -> u32 {
+    DEFAULT_PLAYBACK_CACHE_MAX_GB
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +62,8 @@ pub struct Settings {
     pub prefer_nvenc: bool,
     #[serde(default)]
     pub launch_on_startup: bool,
+    #[serde(default = "default_playback_cache_max_gb")]
+    pub playback_cache_max_gb: u32,
 }
 
 impl Default for Settings {
@@ -62,6 +75,7 @@ impl Default for Settings {
             compress_crf: 26,
             prefer_nvenc: true,
             launch_on_startup: false,
+            playback_cache_max_gb: DEFAULT_PLAYBACK_CACHE_MAX_GB,
         }
     }
 }
@@ -80,6 +94,10 @@ impl Settings {
         }
         let raw = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(path, raw).map_err(|e| e.to_string())
+    }
+
+    pub fn playback_cache_max_bytes(&self) -> u64 {
+        self.playback_cache_max_gb as u64 * 1024 * 1024 * 1024
     }
 }
 
@@ -102,6 +120,14 @@ pub fn validate_watch_dir(path: &str) -> Result<(), String> {
         format!("Watch folder is not accessible: {trimmed} ({e})")
     })?;
 
+    Ok(())
+}
+
+/// Preview cache limit must stay within a safe range (1–100 GB).
+pub fn validate_playback_cache_max_gb(gb: u32) -> Result<(), String> {
+    if !(1..=100).contains(&gb) {
+        return Err("Preview cache limit must be between 1 and 100 GB.".into());
+    }
     Ok(())
 }
 
@@ -174,16 +200,18 @@ mod tests {
         settings.compress_crf = 22;
         settings.prefer_nvenc = false;
         settings.launch_on_startup = true;
+        settings.playback_cache_max_gb = 10;
         settings.save(&path).unwrap();
         let loaded = Settings::load(&path);
         assert_eq!(loaded.watch_dir, "/tmp/recordings");
         assert_eq!(loaded.compress_crf, 22);
         assert!(!loaded.prefer_nvenc);
         assert!(loaded.launch_on_startup);
+        assert_eq!(loaded.playback_cache_max_gb, 10);
     }
 
     #[test]
-    fn load_ignores_legacy_fields() {
+    fn load_legacy_json_defaults_playback_cache_max_gb() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         fs::write(
@@ -202,5 +230,48 @@ mod tests {
         let loaded = Settings::load(&path);
         assert_eq!(loaded.watch_dir, "/videos");
         assert!(!loaded.launch_on_startup);
+        assert_eq!(loaded.playback_cache_max_gb, DEFAULT_PLAYBACK_CACHE_MAX_GB);
+    }
+
+    #[test]
+    fn default_playback_cache_max_gb_is_five() {
+        assert_eq!(Settings::default().playback_cache_max_gb, 5);
+        assert_eq!(
+            Settings::default().playback_cache_max_bytes(),
+            5 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn validate_playback_cache_max_gb_rejects_out_of_range() {
+        assert!(validate_playback_cache_max_gb(0).is_err());
+        assert!(validate_playback_cache_max_gb(101).is_err());
+        assert!(validate_playback_cache_max_gb(1).is_ok());
+        assert!(validate_playback_cache_max_gb(100).is_ok());
+    }
+
+    #[test]
+    fn load_ignores_legacy_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+              "watchDir": "/videos",
+              "ffmpegPath": "",
+              "ffprobePath": "",
+              "compressCrf": 26,
+              "preferNvenc": true,
+              "launchOnStartup": false,
+              "playbackCacheMaxGb": 8,
+              "gameProcessNames": ["cs2"],
+              "backgroundServiceEnabled": true
+            }"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.watch_dir, "/videos");
+        assert!(!loaded.launch_on_startup);
+        assert_eq!(loaded.playback_cache_max_gb, 8);
     }
 }

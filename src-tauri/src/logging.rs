@@ -1,6 +1,6 @@
 use chrono::{NaiveDate, Utc};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -17,7 +17,7 @@ pub fn init_logging(log_dir: &Path) -> Result<(), String> {
     Box::leak(Box::new(guard));
 
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,replaybox=debug"));
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
     let file_layer = fmt::layer().with_writer(non_blocking).with_ansi(false);
 
@@ -72,6 +72,7 @@ fn log_file_date(path: &Path) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use chrono::Duration;
 
     fn touch_log(dir: &Path, date: NaiveDate) {

@@ -1,4 +1,5 @@
 use crate::models::JobStatus;
+use crate::playback_cache::{new_playback_cache_jobs, PlaybackCacheJobs};
 use crate::settings::{AppPaths, Settings};
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -24,6 +25,7 @@ pub struct AppState {
     pub jobs: Mutex<HashMap<String, JobStatus>>,
     /// Running ffmpeg PIDs keyed by job id (for cancel).
     pub job_pids: Mutex<HashMap<String, Arc<std::sync::Mutex<Option<u32>>>>>,
+    pub playback_cache_jobs: PlaybackCacheJobs,
 }
 
 impl AppState {
@@ -42,6 +44,7 @@ impl AppState {
             scan_state: Mutex::new(ScanState::default()),
             jobs: Mutex::new(HashMap::new()),
             job_pids: Mutex::new(HashMap::new()),
+            playback_cache_jobs: new_playback_cache_jobs(),
         })
     }
 

@@ -7,7 +7,6 @@ import {
   formatTimestamp,
   startCompress,
   startTrim,
-  getMediaBaseUrl,
   recordingFileExists,
   resolveCopyPath,
 } from "../lib/api";
@@ -15,6 +14,7 @@ import { Timeline } from "../components/Timeline";
 import { ConflictModal } from "../components/ConflictModal";
 import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
 import { FolderRecordingList } from "../components/FolderRecordingList";
+import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
 import { CompressIcon, FolderIcon, PauseIcon, PlayIcon, ScissorsIcon } from "../components/icons";
 
 type CopyCollision = "overwrite" | "unique";
@@ -47,120 +47,62 @@ export function EditorView({
   onJobStarted,
   onMissingFile,
 }: Props) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const missingNotified = useRef(false);
-  const durationMs = recording.durationMs ?? 0;
+  const playerRef = useRef<VideoPlayerHandle>(null);
+  const catalogDurationMs = recording.durationMs ?? 0;
+  const [timelineDurationMs, setTimelineDurationMs] = useState(
+    catalogDurationMs || 1,
+  );
   const [startMs, setStartMs] = useState(0);
-  const [endMs, setEndMs] = useState(durationMs || 1);
+  const [endMs, setEndMs] = useState(catalogDurationMs || 1);
   const [currentMs, setCurrentMs] = useState(0);
   const [mode, setMode] = useState<"precise" | "fast">("precise");
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
   const [crf, setCrf] = useState(26);
   const [fps, setFps] = useState<30 | 60>(60);
   const [error, setError] = useState<string | null>(null);
-  const [videoSrc, setVideoSrc] = useState<string>("");
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
+    const initialDuration = catalogDurationMs || 1;
+    setTimelineDurationMs(initialDuration);
     setStartMs(0);
-    setEndMs(recording.durationMs || 1);
+    setEndMs(initialDuration);
     setCurrentMs(0);
     setError(null);
     setConflict(null);
     setConfirmDelete(false);
     setPlaying(false);
-    missingNotified.current = false;
-  }, [recording.id, recording.durationMs]);
+  }, [recording.id, catalogDurationMs]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const base = await getMediaBaseUrl();
-        if (!cancelled) {
-          setVideoSrc(
-            `${base}/media?path=${encodeURIComponent(recording.path)}`,
-          );
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setVideoSrc("");
-          setError(`Media server unavailable: ${String(e)}`);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [recording.path]);
-
-  function clampToSelection(ms: number, start = startMs, end = endMs): number {
-    return Math.min(Math.max(ms, start), end);
+  function handleVideoDuration(ms: number) {
+    const videoDurationMs = Math.max(1, Math.round(ms));
+    const effectiveDuration =
+      catalogDurationMs > 0
+        ? Math.min(catalogDurationMs, videoDurationMs)
+        : videoDurationMs;
+    setTimelineDurationMs(effectiveDuration);
+    setEndMs((prev) => Math.min(prev, effectiveDuration));
+    setStartMs((prev) => Math.min(prev, effectiveDuration - 1));
+    setCurrentMs((prev) => Math.min(prev, effectiveDuration));
   }
 
   function seekTo(ms: number, start = startMs, end = endMs) {
-    const clamped = clampToSelection(ms, start, end);
+    const clamped = Math.min(Math.max(ms, start), end);
     setCurrentMs(clamped);
-    const video = videoRef.current;
-    if (video && video.readyState >= 1) {
-      video.currentTime = clamped / 1000;
-    }
+    playerRef.current?.seekTo(clamped);
   }
 
   async function togglePlayback() {
-    const video = videoRef.current;
-    if (!video) return;
-    if (!video.paused) {
-      video.pause();
+    const player = playerRef.current;
+    if (!player) return;
+    if (!player.isPaused()) {
+      player.pause();
       return;
     }
-    const ms = video.currentTime * 1000;
-    if (ms < startMs || ms >= endMs) {
-      const targetSec = startMs / 1000;
-      setCurrentMs(startMs);
-      if (video.readyState >= 1) {
-        if (Math.abs(video.currentTime - targetSec) > 0.01) {
-          await new Promise<void>((resolve) => {
-            const onSeeked = () => {
-              video.removeEventListener("seeked", onSeeked);
-              resolve();
-            };
-            video.addEventListener("seeked", onSeeked);
-            video.currentTime = targetSec;
-          });
-        } else {
-          video.currentTime = targetSec;
-        }
-      }
-    }
-    try {
-      await video.play();
-    } catch (e) {
-      setError(`Playback failed: ${String(e)}`);
-    }
-  }
-
-  function handleTimeUpdate() {
-    const video = videoRef.current;
-    if (!video) return;
-    const ms = video.currentTime * 1000;
-    if (!video.paused && ms >= endMs) {
-      video.pause();
-      seekTo(startMs);
-      return;
-    }
-    if (ms > endMs) {
-      seekTo(endMs);
-      return;
-    }
-    if (ms < startMs) {
-      seekTo(startMs);
-      return;
-    }
-    setCurrentMs(ms);
+    await player.play();
   }
 
   async function handleDelete() {
@@ -312,21 +254,16 @@ export function EditorView({
 
       <div className="editor__layout">
         <div className="editor__player">
-          <video
-            ref={videoRef}
-            key={videoSrc}
-            src={videoSrc || undefined}
-            onClick={() => void togglePlayback()}
-            onLoadedMetadata={() => seekTo(currentMs)}
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
-            onTimeUpdate={handleTimeUpdate}
-            onError={() => {
-              setError(
-                "Video playback failed. Check that the file exists and the media server is running.",
-              );
-              if (missingNotified.current) return;
-              missingNotified.current = true;
+          <VideoPlayer
+            ref={playerRef}
+            recordingId={recording.id}
+            startMs={startMs}
+            endMs={endMs}
+            onTimeUpdate={setCurrentMs}
+            onPlayingChange={setPlaying}
+            onError={setError}
+            onDurationChange={handleVideoDuration}
+            onMissingFile={() => {
               void recordingFileExists(recording.id).then((exists) => {
                 if (!exists) {
                   onMissingFile?.();
@@ -352,7 +289,7 @@ export function EditorView({
             </span>
           </div>
           <Timeline
-            durationMs={durationMs || 1}
+            durationMs={timelineDurationMs}
             startMs={startMs}
             endMs={endMs}
             currentMs={currentMs}
