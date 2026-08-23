@@ -1,4 +1,6 @@
-![ReplayBox](src-tauri/icons/icon.png)
+<p align="center">
+  <img src="src-tauri/icons/icon.png" alt="ReplayBox" />
+</p>
 
 # ReplayBox
 
