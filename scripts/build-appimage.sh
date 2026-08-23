@@ -311,9 +311,6 @@ dump_tauri_failure() {
   else
     echo "    (log file missing)" >&2
   fi
-  echo "==> Common Ubuntu fixes:" >&2
-  echo "    sudo apt install -y libfuse2 librsvg2-bin gstreamer1.0-tools file wget" >&2
-  echo "    rm -rf ~/.cache/tauri/linuxdeploy*" >&2
 }
 
 # Always keep a full (verbose) log. Default mode shows milestones + AppDir/process

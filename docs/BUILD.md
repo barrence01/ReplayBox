@@ -182,7 +182,8 @@ sudo pacman -S --needed \
   gst-plugins-bad \
   gst-plugins-ugly \
   gst-libav \
-  fuse2
+  fuse2 \
+  patchelf
 ```
 
 Rust on Arch is included in the `rust` package above.
@@ -210,6 +211,7 @@ sudo apt update && sudo apt install -y \
   librsvg2-dev \
   librsvg2-bin \
   libfuse2 \
+  patchelf \
   wget \
   curl \
   file \
@@ -232,6 +234,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 - **GStreamer + plugins / `gst-libav` / `gstreamer1.0-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins. `gstreamer1.0-tools` (`gst-inspect-1.0`) is needed at bundle time.
 - **`fuse2` (Arch) / `libfuse2` (Ubuntu, possibly `libfuse2t64`)** — required to run/build AppImages on hosts that use FUSE2.
 - **`librsvg` / `librsvg2-bin`** — linuxdeploy’s GTK plugin uses `rsvg-convert` for icons.
+- **`patchelf`** — required by linuxdeploy’s GStreamer plugin (`--appimage` builds) to set RPATHs on bundled plugins.
 
 ### Other distros
 
@@ -299,7 +302,7 @@ The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg wit
 | Slow first build                                         | Normal: compiling FFmpeg from source can take several minutes                                                                                                                                                                                                                                                                                          |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev`                                                                                                                                                                |
 | Vite `The service is no longer running` after crash      | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev`                                                                                                                                                                                                                                                         |
-| `failed to run linuxdeploy` when bundling AppImage       | Tauri hides linuxdeploy stderr unless `--verbose` is set. Use `./scripts/build-appimage.sh` (always passes `--verbose`, sets `NO_STRIP=true` and `APPIMAGE_EXTRACT_AND_RUN=1`, and dumps host/log matches on failure). Inspect `build/appimage-build.log`. Ubuntu: install `libfuse2` / `libfuse2t64`, `librsvg2-bin`, `gstreamer1.0-tools`; if the cache is corrupt, `rm -rf ~/.cache/tauri/linuxdeploy*` |
+| `failed to run linuxdeploy` when bundling AppImage       | Tauri hides linuxdeploy stderr unless `--verbose` is set. Use `./scripts/build-appimage.sh` (always passes `--verbose`, sets `NO_STRIP=true` and `APPIMAGE_EXTRACT_AND_RUN=1`, and dumps host/log matches on failure). Inspect `build/appimage-build.log`. Run `./scripts/check-build-deps.sh --appimage` first (`patchelf`, `libfuse2`/`libfuse2t64`, `librsvg2-bin`, `gstreamer1.0-tools`). If the Tauri tool cache is corrupt: `rm -rf ~/.cache/tauri/linuxdeploy*` |
 | AppImage freezes when opening the editor                 | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh` (clears/restages `src-tauri/.appimage-gst/` when the fingerprint changes). Smoke-test: open the editor and play a local H.264 MP4. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
 | Second launch opens another window                       | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance`                                                                                                                                                                                                                  |
 

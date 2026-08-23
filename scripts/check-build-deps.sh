@@ -178,6 +178,7 @@ check_appimage_profile() {
   need_download_tool || true
   need_cmd rsvg-convert || true
   need_cmd gst-inspect-1.0 || true
+  need_cmd patchelf || true
   need_libfuse2 || true
   check_gstreamer_runtime || true
 }
@@ -213,7 +214,8 @@ sudo pacman -S --needed \
   gst-plugins-bad \
   gst-plugins-ugly \
   gst-libav \
-  fuse2
+  fuse2 \
+  patchelf
 ```
 
 Rust on Arch is included in the `rust` package above.
@@ -241,6 +243,7 @@ sudo apt update && sudo apt install -y \
   librsvg2-dev \
   librsvg2-bin \
   libfuse2 \
+  patchelf \
   wget \
   curl \
   file \
