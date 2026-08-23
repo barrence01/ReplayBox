@@ -2964,6 +2964,7 @@ name = "replaybox"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs 6.0.0",
  "fs2",
  "parking_lot",
  "rusqlite",

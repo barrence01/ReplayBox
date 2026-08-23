@@ -3,9 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
-/// Default watch directory for game recordings (user-configurable).
-pub const DEFAULT_WATCH_DIR: &str =
-    "/run/media/williambarrence/HDD/WilliamBarrence/Gravacoes";
+/// OS Videos folder when available; empty string if resolution fails.
+fn default_watch_dir() -> String {
+    dirs::video_dir()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_default()
+}
 
 /// XDG-aligned application directories resolved via Tauri `PathResolver`.
 #[derive(Debug, Clone)]
@@ -69,7 +72,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            watch_dir: DEFAULT_WATCH_DIR.to_string(),
+            watch_dir: default_watch_dir(),
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
             compress_crf: 26,
@@ -143,6 +146,12 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn default_watch_dir_does_not_panic() {
+        let _ = default_watch_dir();
+        let _ = Settings::default().watch_dir;
+    }
 
     #[test]
     fn validate_watch_dir_accepts_readable_directory() {
