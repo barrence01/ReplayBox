@@ -102,7 +102,15 @@ need_libfuse2() {
       return 0
     fi
   done
-  record_missing "library: libfuse2 (libfuse.so.2)"
+  record_missing "library: libfuse2 / libfuse2t64 (libfuse.so.2)"
+  return 1
+}
+
+need_download_tool() {
+  if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+    return 0
+  fi
+  record_missing "command: curl or wget"
   return 1
 }
 
@@ -167,6 +175,9 @@ check_appimage_profile() {
   check_full_profile
   need_cmd file || true
   need_cmd sha256sum || true
+  need_download_tool || true
+  need_cmd rsvg-convert || true
+  need_cmd gst-inspect-1.0 || true
   need_libfuse2 || true
   check_gstreamer_runtime || true
 }
@@ -215,6 +226,7 @@ sudo apt update && sudo apt install -y \
   build-essential \
   nasm \
   libx264-dev \
+  libssl-dev \
   libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-plugins-base \
@@ -222,13 +234,21 @@ sudo apt update && sudo apt install -y \
   gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly \
   gstreamer1.0-libav \
+  gstreamer1.0-tools \
   libgtk-3-dev \
   libwebkit2gtk-4.1-dev \
   libayatana-appindicator3-dev \
+  librsvg2-dev \
+  librsvg2-bin \
   libfuse2 \
+  wget \
+  curl \
+  file \
   nodejs \
   npm
 ```
+
+On Ubuntu 24.04+, `libfuse2` may pull in `libfuse2t64`. linuxdeploy is itself an AppImage and needs `libfuse.so.2` (or `APPIMAGE_EXTRACT_AND_RUN=1`, which `build-appimage.sh` sets).
 
 Rust on Ubuntu (install rustup, then reopen the shell or run `source "$HOME/.cargo/env"`):
 

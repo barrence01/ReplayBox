@@ -195,6 +195,7 @@ sudo apt update && sudo apt install -y \
   build-essential \
   nasm \
   libx264-dev \
+  libssl-dev \
   libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-plugins-base \
@@ -202,13 +203,21 @@ sudo apt update && sudo apt install -y \
   gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly \
   gstreamer1.0-libav \
+  gstreamer1.0-tools \
   libgtk-3-dev \
   libwebkit2gtk-4.1-dev \
   libayatana-appindicator3-dev \
+  librsvg2-dev \
+  librsvg2-bin \
   libfuse2 \
+  wget \
+  curl \
+  file \
   nodejs \
   npm
 ```
+
+On Ubuntu 24.04+, `libfuse2` may install as `libfuse2t64`. linuxdeploy is itself an AppImage and needs `libfuse.so.2`, or extract-and-run (`APPIMAGE_EXTRACT_AND_RUN=1`, which `build-appimage.sh` sets).
 
 Rust on Ubuntu (install rustup, then reopen the shell or run `source "$HOME/.cargo/env"`):
 
@@ -220,8 +229,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 - `x264` / `libx264-dev` — required for `--enable-libx264` in the bundled FFmpeg build.
 - `libappindicator-gtk3` / `libayatana-appindicator3-dev` — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
-- **GStreamer + plugins / `gst-libav` / `gstreamer1.0-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins.
-- **`fuse2` (Arch) / `libfuse2` (Ubuntu)** — required to run/build AppImages on hosts that use FUSE2.
+- **GStreamer + plugins / `gst-libav` / `gstreamer1.0-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins. `gstreamer1.0-tools` (`gst-inspect-1.0`) is needed at bundle time.
+- **`fuse2` (Arch) / `libfuse2` (Ubuntu, possibly `libfuse2t64`)** — required to run/build AppImages on hosts that use FUSE2.
+- **`librsvg` / `librsvg2-bin`** — linuxdeploy’s GTK plugin uses `rsvg-convert` for icons.
 
 ### Other distros
 
@@ -265,7 +275,7 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 | `npm run tauri:build`                                    | FFmpeg + production Tauri build                             |
 | `npm run build:all` / `./scripts/build-all.sh`           | Full check + install + FFmpeg + production build            |
 | `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/`          |
-| `VERBOSE=1 ./scripts/build-appimage.sh`                  | Same, with verbose Tauri/linuxdeploy output on the terminal |
+| `VERBOSE=1 ./scripts/build-appimage.sh`                  | Same; also mirrors the (always verbose) Tauri/linuxdeploy log to the terminal |
 
 
 
@@ -289,7 +299,7 @@ The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg wit
 | Slow first build                                         | Normal: compiling FFmpeg from source can take several minutes                                                                                                                                                                                                                                                                                          |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev`                                                                                                                                                                |
 | Vite `The service is no longer running` after crash      | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev`                                                                                                                                                                                                                                                         |
-| `failed to run linuxdeploy` when bundling AppImage       | On Arch, use `./scripts/build-appimage.sh` (sets `NO_STRIP=true`), or export `NO_STRIP=true` before `tauri build`                                                                                                                                                                                                                                      |
+| `failed to run linuxdeploy` when bundling AppImage       | Tauri hides linuxdeploy stderr unless `--verbose` is set. Use `./scripts/build-appimage.sh` (always passes `--verbose`, sets `NO_STRIP=true` and `APPIMAGE_EXTRACT_AND_RUN=1`, and dumps host/log matches on failure). Inspect `build/appimage-build.log`. Ubuntu: install `libfuse2` / `libfuse2t64`, `librsvg2-bin`, `gstreamer1.0-tools`; if the cache is corrupt, `rm -rf ~/.cache/tauri/linuxdeploy*` |
 | AppImage freezes when opening the editor                 | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh` (clears/restages `src-tauri/.appimage-gst/` when the fingerprint changes). Smoke-test: open the editor and play a local H.264 MP4. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
 | Second launch opens another window                       | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance`                                                                                                                                                                                                                  |
 

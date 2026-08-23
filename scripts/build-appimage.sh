@@ -208,20 +208,34 @@ echo "==> Building ReplayBox AppImage"
 # NO_STRIP=true: Arch (and other rolling distros) — linuxdeploy's bundled strip
 # fails on modern ELF (.relr.dyn); see https://github.com/tauri-apps/tauri/issues/14755
 export NO_STRIP=true
+export APPIMAGE_EXTRACT_AND_RUN=1
 # Point linuxdeploy's gstreamer plugin at the curated stage (not all of /usr/lib/gstreamer-1.0).
 export GSTREAMER_PLUGINS_DIR="${GST_STAGE_PLUGINS}"
+if [[ -z "${GSTREAMER_HELPERS_DIR:-}" ]]; then
+  for candidate in \
+    /usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0 \
+    /usr/lib64/gstreamer-1.0 \
+    /usr/lib/gstreamer1.0/gstreamer-1.0; do
+    if [[ -d "${candidate}" ]]; then
+      export GSTREAMER_HELPERS_DIR="${candidate}"
+      break
+    fi
+  done
+fi
 OUT_DIR="${ROOT}/build"
 mkdir -p "${OUT_DIR}"
 LOG_FILE="${OUT_DIR}/appimage-build.log"
 echo "    Full log: ${LOG_FILE}"
 echo "    GSTREAMER_PLUGINS_DIR=${GSTREAMER_PLUGINS_DIR}"
+if [[ -n "${GSTREAMER_HELPERS_DIR:-}" ]]; then
+  echo "    GSTREAMER_HELPERS_DIR=${GSTREAMER_HELPERS_DIR}"
+fi
 echo "    Bundling can take several minutes on HDD (linuxdeploy + squashfs)."
 echo "    Follow live: tail -f ${LOG_FILE}"
 
-TAURI_ARGS=(build --bundles appimage)
-if [[ "${VERBOSE}" == "1" ]]; then
-  TAURI_ARGS+=(--verbose)
-fi
+# Always pass --verbose: without it Tauri captures linuxdeploy stderr and
+# replaces it with a generic `failed to run linuxdeploy` on failure.
+TAURI_ARGS=(build --bundles appimage --verbose)
 
 run_tauri() {
   # Do not wrap with stdbuf: it can turn child pipelines (e.g. ffmpeg|head in
@@ -229,8 +243,85 @@ run_tauri() {
   npx tauri "${TAURI_ARGS[@]}"
 }
 
-# Always keep a full log. Default mode shows milestones + AppDir/process heartbeat
-# so buffered linuxdeploy output does not look like a hang.
+dump_host_diag() {
+  local pretty="unknown" fuse="missing" userns="" tauri_cache="${HOME}/.cache/tauri"
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    pretty="$(. /etc/os-release; echo "${PRETTY_NAME:-unknown}")"
+  fi
+  echo "    OS: ${pretty}"
+  echo "    NO_STRIP=${NO_STRIP-<unset>} APPIMAGE_EXTRACT_AND_RUN=${APPIMAGE_EXTRACT_AND_RUN-<unset>}"
+  echo "    GSTREAMER_PLUGINS_DIR=${GSTREAMER_PLUGINS_DIR-<unset>}"
+  echo "    GSTREAMER_HELPERS_DIR=${GSTREAMER_HELPERS_DIR-<unset>}"
+  echo "    TMPDIR=${TMPDIR-<unset>}"
+  if ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
+    fuse="yes"
+  else
+    for path in \
+      /usr/lib/x86_64-linux-gnu/libfuse.so.2 \
+      /usr/lib/libfuse.so.2 \
+      /usr/lib64/libfuse.so.2; do
+      if [[ -e "${path}" ]]; then
+        fuse="${path}"
+        break
+      fi
+    done
+  fi
+  echo "    libfuse.so.2: ${fuse}"
+  for tool in file patchelf rsvg-convert gst-inspect-1.0 curl wget fusermount fusermount3; do
+    if command -v "${tool}" >/dev/null 2>&1; then
+      echo "    ${tool}: $(command -v "${tool}")"
+    else
+      echo "    ${tool}: missing"
+    fi
+  done
+  userns="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+  if [[ -r "${userns}" ]]; then
+    echo "    apparmor_restrict_unprivileged_userns=$(cat "${userns}" 2>/dev/null || echo '?')"
+  fi
+  echo "    Tauri linuxdeploy cache: ${tauri_cache}"
+  if compgen -G "${tauri_cache}/linuxdeploy*" >/dev/null 2>&1; then
+    ls -lh "${tauri_cache}"/linuxdeploy* 2>/dev/null | sed 's/^/      /'
+  else
+    echo "      (no linuxdeploy files)"
+  fi
+}
+
+dump_tauri_failure() {
+  local status="$1"
+  local log="$2"
+  local matches=""
+  echo "error: tauri build failed (exit ${status})" >&2
+  echo "    Log: ${log}" >&2
+  echo "==> Host diagnostics" >&2
+  dump_host_diag >&2
+  if [[ -f "${log}" ]]; then
+    echo "==> linuxdeploy / bundler matches in log" >&2
+    matches="$(
+      grep -nEi 'linuxdeploy|fuse|strip|relr|patchelf|gstreamer|rsvg|ERROR|Error |failed|AppImage|dlopen|cannot|not found' "${log}" 2>/dev/null \
+        | tail -n 80 || true
+    )"
+    if [[ -n "${matches}" ]]; then
+      printf '%s\n' "${matches}" >&2
+    else
+      echo "    (no matching lines)" >&2
+    fi
+    echo "==> Last 20 log lines" >&2
+    tail -n 20 "${log}" >&2 || true
+  else
+    echo "    (log file missing)" >&2
+  fi
+  echo "==> Common Ubuntu fixes:" >&2
+  echo "    sudo apt install -y libfuse2 librsvg2-bin gstreamer1.0-tools file wget" >&2
+  echo "    rm -rf ~/.cache/tauri/linuxdeploy*" >&2
+}
+
+# Always keep a full (verbose) log. Default mode shows milestones + AppDir/process
+# heartbeat so buffered linuxdeploy output does not look like a hang.
+echo "    Tauri --verbose is always on so linuxdeploy stderr is captured in the log."
+if [[ "${VERBOSE}" == "1" ]]; then
+  echo "    VERBOSE=1: mirroring the full log to the terminal."
+fi
 echo "    Progress below…"
 set +e
 if [[ "${VERBOSE}" == "1" ]]; then
@@ -246,7 +337,7 @@ else
     interesting=""
     if [[ -f "${LOG_FILE}" ]]; then
       interesting="$(
-        grep -E 'Running beforeBuildCommand|Compiling |Finished |Built application|Bundling |Deploying dependencies|Copying plugins|Running output plugin|Generating squashfs|Success|Error |error:|FAILED|Failed ' "${LOG_FILE}" \
+        grep -E 'Running beforeBuildCommand|Compiling |Finished |Built application|Bundling |Deploying dependencies|Copying plugins|Running output plugin|Generating squashfs|Success|Error |error:|FAILED|Failed |linuxdeploy|ERROR|strip |fuse' "${LOG_FILE}" \
           | tail -n 1 || true
       )"
     fi
@@ -267,8 +358,7 @@ else
 fi
 set -e
 if [[ "${TAURI_STATUS}" -ne 0 ]]; then
-  echo "error: tauri build failed (exit ${TAURI_STATUS}); last 40 log lines:" >&2
-  tail -n 40 "${LOG_FILE}" >&2 || true
+  dump_tauri_failure "${TAURI_STATUS}" "${LOG_FILE}"
   exit "${TAURI_STATUS}"
 fi
 grep -E 'Finished|Bundling|bundle at|Success' "${LOG_FILE}" | tail -n 8 | sed 's/^/    /' || true
@@ -313,11 +403,18 @@ ensure_cached_runtime() {
     echo "    Using cached type2 runtime (${RUNTIME_CACHE})"
     return 0
   fi
-  need_cmd curl
   echo "    Downloading AppImage type2 runtime → ${RUNTIME_CACHE}"
   local tmp
   tmp="$(mktemp "${RUNTIME_CACHE}.XXXXXX")"
-  curl -fsSL -o "${tmp}" "${RUNTIME_URL}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "${tmp}" "${RUNTIME_URL}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${tmp}" "${RUNTIME_URL}"
+  else
+    echo "error: curl or wget is required to download the AppImage runtime" >&2
+    rm -f "${tmp}"
+    exit 1
+  fi
   mv -f "${tmp}" "${RUNTIME_CACHE}"
 }
 
