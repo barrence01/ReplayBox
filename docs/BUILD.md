@@ -33,7 +33,30 @@ Or via npm:
 npm run build:appimage
 ```
 
-The script runs the same host checks and FFmpeg prepare as `build-all`, stages host GStreamer plugins into `src-tauri/.appimage-gst/` for WebKit `<video>` playback, then `tauri build --bundles appimage`, and copies `*.AppImage` from `src-tauri/target/release/bundle/appimage/` into `build/`. It sets `NO_STRIP=true` so linuxdeploy works on Arch (bundled `strip` otherwise fails on modern system libraries).
+The script runs host checks, stages a **curated** set of GStreamer plugins into `src-tauri/.appimage-gst/` for WebKit `<video>` playback (fingerprint-cached; skips copy when unchanged), installs npm deps only when `node_modules` is missing or older than `package-lock.json`, then `tauri build --bundles appimage` with `GSTREAMER_PLUGINS_DIR` pointed at that curated stage so linuxdeploy does not pull all of `/usr/lib/gstreamer-1.0`. FFmpeg is prepared once via Tauri’s `beforeBuildCommand`. After the bundle, it normalizes the AppDir to the canonical AppImage layout: FreeDesktop id **`org.replaybox.replaybox`**, hicolor PNG sizes + scalable SVG, a single `usr/share/applications/org.replaybox.replaybox.desktop` with `Name=ReplayBox` / `Icon=org.replaybox.replaybox`, and root symlinks (`*.desktop`, `*.svg`, `.DirIcon` → scalable SVG, Waywallen-style). It clears `.cache/appimage/tmp/` scratch before that step (keeps cached `runtime-x86_64` / extracted `appimagetool`), asserts those entries before packing, re-packs atomically with `appimagetool` (temp file, then replace), **extracts the packed AppImage and asserts desktop/icon symlinks again**, and copies `*.AppImage` into `build/`. It honors `CARGO_TARGET_DIR` when set. It sets `NO_STRIP=true` so linuxdeploy works on Arch (bundled `strip` otherwise fails on modern system libraries).
+
+**Important:** `mksquashfs` / `appimagetool` need scratch space under `TMPDIR`. If `/tmp` (often a small tmpfs) is nearly full, the squashfs can silently store **0-byte** stubs for `usr/share/**` — then appimage-manager shows `Name=ReplayBox_0.1.0_amd64` (filename fallback) and no icon. The build script sets `TMPDIR` to `.cache/appimage/tmp/` on the build disk for this reason.
+
+At the end it prints phase timings (`gst | npm | tauri | icons | repack | total`). By default the terminal shows build milestones plus a heartbeat every ~10s during linuxdeploy (phase name, AppDir size, GST plugin count) so buffered output does not look hung; the full log is always in `build/appimage-build.log`. For a full linuxdeploy/Tauri stream on the terminal:
+
+```bash
+VERBOSE=1 ./scripts/build-appimage.sh
+# or follow the log while a quiet build runs:
+# tail -f build/appimage-build.log
+```
+
+**Smoke-test after packaging:** open the AppImage, open the editor, and play a local H.264 MP4. If the UI freezes, GStreamer plugins are incomplete — see Troubleshooting below.
+
+After changing the app icon, desktop `Name=`, or FreeDesktop id, clear any cached AppImage icons from **appimage-manager** (or similar) and re-integrate the new AppImage:
+
+```bash
+rm -f ~/.local/share/icons/hicolor/*/apps/appimage-*.png
+rm -f ~/.local/share/icons/hicolor/scalable/apps/appimage-*.svg
+# optional: clear file-manager thumbnails
+rm -rf ~/.cache/thumbnails/*
+```
+
+Then remove/re-add the AppImage in the manager so it re-extracts `Name=ReplayBox` and `Icon=org.replaybox.replaybox` from the bundled `.desktop` / scalable SVG at `usr/share/icons/hicolor/scalable/apps/org.replaybox.replaybox.svg` (root `.DirIcon` also points at that SVG). An old integration (e.g. previous PNG/`Icon=replaybox`, or a 0-byte host icon) may still show a stale icon or `Name=ReplayBox_0.1.0_amd64` (filename fallback) until you re-integrate.
 
 FFmpeg/FFprobe showing as “found” in Settings does **not** cover editor playback: the editor uses WebKitGTK + GStreamer. Without plugins in the AppImage, opening the editor can freeze the UI.
 
@@ -170,7 +193,7 @@ sudo pacman -S --needed \
 - **`x264`** — required for `--enable-libx264` in the bundled FFmpeg build.
 - **`libappindicator-gtk3`** — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
-- **GStreamer + plugins / `gst-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` copies `/usr/lib/gstreamer-1.0` into the bundle.
+- **GStreamer + plugins / `gst-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins.
 
 ### Other distros
 
@@ -187,7 +210,10 @@ Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node
 | **Rust crates** | `cargo` / `tauri build` | Cargo registry + target dir | Downloaded by Cargo as needed |
 | **App binary / installers** | `tauri build` | `src-tauri/target/release/` (+ bundle formats if enabled) | Production output |
 | **AppImage copy** | `build:appimage` | `build/*.AppImage` | Copied from Tauri bundle output |
-| **Staged GStreamer plugins** | `build:appimage` | `src-tauri/.appimage-gst/` | Copied from `/usr/lib/gstreamer-1.0` into the AppImage |
+| **Staged GStreamer plugins** | `build:appimage` | `src-tauri/.appimage-gst/` | Curated plugins; also exported as `GSTREAMER_PLUGINS_DIR` for linuxdeploy |
+| **appimagetool extract** | AppImage re-pack | `.cache/appimage/appimagetool/` | Extracted once from Tauri’s linuxdeploy plugin (gitignored) |
+| **AppImage type2 runtime** | AppImage re-pack | `.cache/appimage/runtime-x86_64` | Avoids re-download on every re-pack (gitignored) |
+| **AppImage scratch TMPDIR** | AppImage normalize/re-pack | `.cache/appimage/tmp/` | Cleared before icon normalize; used by `mksquashfs` / extract asserts (not `/tmp`) |
 
 ### FFmpeg cache behavior
 
@@ -205,7 +231,8 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 | `npm run tauri:dev` | FFmpeg + Tauri/Vite dev |
 | `npm run tauri:build` | FFmpeg + production Tauri build |
 | `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + production build |
-| `npm run build:appimage` / `./scripts/build-appimage.sh` | Same checks + AppImage only → `build/` |
+| `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/` |
+| `VERBOSE=1 ./scripts/build-appimage.sh` | Same, with verbose Tauri/linuxdeploy output on the terminal |
 
 ## License note (bundled FFmpeg)
 
@@ -224,5 +251,5 @@ The bundled FFmpeg is configured with **`--enable-gpl`** and **libx264**. Distri
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev` |
 | Vite `The service is no longer running` after crash | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev` |
 | `failed to run linuxdeploy` when bundling AppImage | On Arch, use `./scripts/build-appimage.sh` (sets `NO_STRIP=true`), or export `NO_STRIP=true` before `tauri build` |
-| AppImage freezes when opening the editor | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh`. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
+| AppImage freezes when opening the editor | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh` (clears/restages `src-tauri/.appimage-gst/` when the fingerprint changes). Smoke-test: open the editor and play a local H.264 MP4. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
 | Second launch opens another window | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance` |

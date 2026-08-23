@@ -30,7 +30,9 @@ dist-ssr
 src-tauri/target
 src-tauri/gen/schemas
 
-# Bundled FFmpeg build cache and staged binaries
+# Bundled FFmpeg build cache, AppImage tooling binaries, and staged binaries
+# .cache/ffmpeg/          — FFmpeg source + compiled toolchain
+# .cache/appimage/        — type2 runtime + extracted appimagetool
 .cache/
 src-tauri/resources/ffmpeg/ffmpeg
 src-tauri/resources/ffmpeg/ffprobe
@@ -44,3 +46,4 @@ src-tauri/.appimage-gst/
 # Build artifacts
 build/
 build-*/
+squashfs-root/

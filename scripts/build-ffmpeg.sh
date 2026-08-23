@@ -57,7 +57,10 @@ copy_to_staging() {
   echo "Staged bundled tools:"
   echo "  ${STAGING_DIR}/ffmpeg"
   echo "  ${STAGING_DIR}/ffprobe"
-  "${STAGING_DIR}/ffmpeg" -version | head -n 1
+  # Capture full -version (no pipe to head): under pipefail, early pipe close → SIGPIPE 141.
+  local ver
+  ver="$("${STAGING_DIR}/ffmpeg" -version 2>&1)" || true
+  printf '%s\n' "${ver%%$'\n'*}"
 }
 
 # Cache hit: binaries already built for this tag/arch/fingerprint.
