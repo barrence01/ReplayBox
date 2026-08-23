@@ -234,9 +234,11 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 | `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/` |
 | `VERBOSE=1 ./scripts/build-appimage.sh` | Same, with verbose Tauri/linuxdeploy output on the terminal |
 
-## License note (bundled FFmpeg)
+## License (redistribution)
 
-The bundled FFmpeg is configured with **`--enable-gpl`** and **libx264**. Distributing the app means complying with those license terms.
+ReplayBox application code is **MIT** — see [LICENSE](../LICENSE).
+
+The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg with libx264) and **LGPL-2.1** (GStreamer, WebKitGTK, GTK). Full texts and corresponding-source notes: **[THIRD_PARTY.md](../THIRD_PARTY.md)**. License files are copied into the AppImage at `usr/share/licenses/replaybox/`.
 
 ## Troubleshooting
 

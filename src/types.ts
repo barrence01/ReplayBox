@@ -87,4 +87,10 @@ export interface CatalogScanFinished {
   message?: string;
 }
 
-export type ViewId = "library" | "session" | "editor" | "settings" | "queues";
+export type ViewId =
+  | "library"
+  | "session"
+  | "editor"
+  | "settings"
+  | "queues"
+  | "about";

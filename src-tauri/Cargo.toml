@@ -3,6 +3,7 @@ name = "replaybox"
 version = "0.1.0"
 description = "Game recording catalog and VFR-safe clip editor"
 authors = ["William Barrence"]
+license = "MIT"
 edition = "2021"
 default-run = "replaybox"
 

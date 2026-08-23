@@ -476,6 +476,29 @@ EOF
   ln -sfn "${id}.svg" "${appdir}/.DirIcon"
 }
 
+stage_license_files() {
+  local appdir="$1"
+  local dest="${appdir}/usr/share/licenses/replaybox"
+  echo "==> Staging license files in AppDir"
+  mkdir -p "${dest}"
+  cp -f "${ROOT}/LICENSE" "${dest}/LICENSE"
+  cp -f "${ROOT}/THIRD_PARTY.md" "${dest}/THIRD_PARTY.md"
+  cp -f "${ROOT}/licenses/GPL-2.0.txt" "${dest}/GPL-2.0.txt"
+  cp -f "${ROOT}/licenses/LGPL-2.1.txt" "${dest}/LGPL-2.1.txt"
+}
+
+assert_license_files() {
+  local base="$1"
+  local prefix="${base}/usr/share/licenses/replaybox"
+  local file
+  for file in LICENSE THIRD_PARTY.md GPL-2.0.txt LGPL-2.1.txt; do
+    if [[ ! -s "${prefix}/${file}" ]]; then
+      echo "error: license file missing or empty: ${prefix}/${file}" >&2
+      exit 1
+    fi
+  done
+}
+
 assert_appdir_ready() {
   local appdir="$1"
   local id="${APPIMAGE_DESKTOP_ID}"
@@ -527,6 +550,8 @@ assert_appdir_ready() {
     echo "error: scalable SVG missing or empty: ${icon_svg}" >&2
     exit 1
   fi
+
+  assert_license_files "${appdir}"
 }
 
 assert_appimage_contents() {
@@ -588,6 +613,7 @@ assert_appimage_contents() {
       echo "hint: free space under TMPDIR=${TMPDIR_APPIMAGE} (not /tmp tmpfs)" >&2
       exit 1
     fi
+    assert_license_files "squashfs-root"
   )
   rm -rf "${extract_dir}"
 }
@@ -601,6 +627,7 @@ fi
 
 clean_appimage_tmpdir
 normalize_appdir_icons "${APPDIR}"
+stage_license_files "${APPDIR}"
 assert_appdir_ready "${APPDIR}"
 mark T_icons
 

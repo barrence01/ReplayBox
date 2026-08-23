@@ -1,14 +1,12 @@
-<p align="center">
-  <img src="src-tauri/icons/icon.png" alt="ReplayBox" width="128" />
-</p>
+![ReplayBox](src-tauri/icons/icon.png)
 
-<h1 align="center">ReplayBox</h1>
+# ReplayBox
 
-<p align="center"><strong>Clip companion for game recordings</strong></p>
+**Clip companion for game recordings**
 
 ---
 
-ReplayBox helps you turn long game recordings into shareable clips — browse your recordings folder, review the last 24 hours, trim and compress, then export a copy ready to upload or send.
+ReplayBox helps you turn long game recordings into shareable clips. Browse your recordings folder, review your recorded clips, trim and compress, then export a copy ready to upload or send.
 
 ---
 
@@ -24,11 +22,10 @@ ReplayBox helps you turn long game recordings into shareable clips — browse yo
 
 - **Game folders** — browse recordings by game under your watch directory
 - **Last 24 hours** — review recent captures
-- **System tray** — close to tray; indexing runs when the app starts (DB cache + async scan)
-- **Launch on login** — optional autostart to the system tray from Settings
 - **Time-based trim** — precise (VFR-safe re-encode) or fast (stream copy; may cut on keyframe)
-- **Compress** — smaller files for uploads, with optional system NVENC override
-- **Bundled FFmpeg** — no system FFmpeg install required for basic use (built from source with cache)
+- **Compress** — smaller files for uploads
+
+
 
 ## Build
 
@@ -40,9 +37,13 @@ npm run tauri:dev      # FFmpeg + hot reload
 npm run build:all      # full production build (or ./scripts/build-all.sh)
 ```
 
-| Binary | Role |
-|--------|------|
+
+| Binary      | Role                                        |
+| ----------- | ------------------------------------------- |
 | `replaybox` | Desktop app (`default-run` for `cargo run`) |
+
+
+
 
 ## First run
 
@@ -50,7 +51,9 @@ npm run build:all      # full production build (or ./scripts/build-all.sh)
 2. (Optional) Enable **Start ReplayBox in the tray when you log in**, then Save.
 3. Use **Library** or **Session** (last 24 hours) to browse recordings.
 4. Open a clip to trim or compress (**create a copy** or replace the original).
-5. Closing the window hides to the tray; use **Quit** in the tray menu to exit.
+5. Closing the window hides to the tray, use **Quit** in the tray menu to exit.
+
+
 
 ## Logs
 
@@ -60,6 +63,8 @@ Backend logs are written daily to `~/.local/share/org.replaybox/logs/replaybox.l
 
 Tauri 2 · React / TypeScript · FFmpeg · SQLite — **Linux**
 
-## License note
+## License
 
-The bundled FFmpeg build enables **GPL** because it links **libx264**. See [docs/BUILD.md](docs/BUILD.md) before redistributing.
+ReplayBox is licensed under the [MIT License](LICENSE).
+
+The distributed AppImage also bundles **FFmpeg** (GPL-2.0, with **libx264**) and **GStreamer / WebKitGTK / GTK** (LGPL-2.1). See [THIRD_PARTY.md](THIRD_PARTY.md) and [docs/BUILD.md](docs/BUILD.md) before redistributing.

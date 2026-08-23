@@ -1112,6 +1112,25 @@ select {
   max-width: 720px;
 }
 
+.about-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-width: 720px;
+}
+
+.about-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+
+.about-list li {
+  color: var(--text);
+}
+
 .settings-section {
   background: var(--bg-elevated);
   border: 1px solid var(--border);

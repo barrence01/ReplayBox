@@ -32,6 +32,7 @@ import { LibraryView } from "./views/LibraryView";
 import { SessionView } from "./views/SessionView";
 import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
+import { AboutView } from "./views/AboutView";
 import { QueuesView } from "./views/QueuesView";
 import { JobBar } from "./components/JobBar";
 import { recordingsInExactDir } from "./lib/libraryFolders";
@@ -287,6 +288,13 @@ function App() {
         >
           Settings
         </button>
+        <button
+          type="button"
+          className={view === "about" ? "active" : ""}
+          onClick={() => navigateTo("about")}
+        >
+          About
+        </button>
       </nav>
 
       <div className="app__top">
@@ -447,6 +455,7 @@ function App() {
             }}
           />
         )}
+        {view === "about" && <AboutView />}
       </main>
     </div>
   );
