@@ -2,13 +2,14 @@
 
 Build instructions for ReplayBox — see the [README](../README.md) for the project overview.
 
-This guide covers a full production build (tested on Arch Linux + KDE Plasma): host packages, downloads, bundled FFmpeg, and the Tauri app.
+This guide covers a full production build (tested on Arch Linux and Ubuntu): host packages, downloads, bundled FFmpeg, and the Tauri app.
 
 ## Quick start
 
 ```bash
 # From the repository root
-chmod +x scripts/build-all.sh   # once
+chmod +x scripts/check-build-deps.sh scripts/build-all.sh   # once
+./scripts/check-build-deps.sh
 ./scripts/build-all.sh
 ```
 
@@ -23,7 +24,8 @@ npm run build:all
 To build only the Linux AppImage and copy it to `build/` at the repo root:
 
 ```bash
-chmod +x scripts/build-appimage.sh   # once
+chmod +x scripts/check-build-deps.sh scripts/build-appimage.sh   # once
+./scripts/check-build-deps.sh --appimage
 ./scripts/build-appimage.sh
 ```
 
@@ -133,7 +135,7 @@ Settings → **Start ReplayBox in the tray when you log in** uses XDG Autostart 
 
 ## What `build-all` does
 
-1. Verifies host tools (`node`, `npm`, `cargo`, `rustc`, `git`, `make`, `pkg-config`, `nasm`, **libx264**)
+1. Verifies host tools via `scripts/check-build-deps.sh` (Node, Rust, Tauri/GTK/WebKit libs, NASM, libx264, and related build deps)
 2. Runs `npm install`
 3. Runs `npm run prepare:ffmpeg`
 4. Runs `npm run tauri:build` (frontend + Rust + app bundle)
@@ -143,6 +145,16 @@ Settings → **Start ReplayBox in the tray when you log in** uses XDG Autostart 
 ## System packages (install yourself)
 
 These are **not** downloaded by the script; install them with your distro package manager.
+
+Validate before building:
+
+```bash
+./scripts/check-build-deps.sh           # full production build
+./scripts/check-build-deps.sh --appimage # AppImage build (adds GStreamer runtime + libfuse2)
+./scripts/check-build-deps.sh --ffmpeg   # bundled FFmpeg only
+```
+
+If anything is missing, the script prints install commands for Arch Linux and Ubuntu.
 
 ### Arch Linux
 
@@ -169,20 +181,51 @@ sudo pacman -S --needed \
   gst-plugins-good \
   gst-plugins-bad \
   gst-plugins-ugly \
-  gst-libav
+  gst-libav \
+  fuse2
+```
+
+Rust on Arch is included in the `rust` package above.
+
+### Ubuntu
+
+```bash
+sudo apt update && sudo apt install -y \
+  pkgconf \
+  build-essential \
+  nasm \
+  libx264-dev \
+  libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav \
+  libgtk-3-dev \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  libfuse2 \
+  nodejs \
+  npm
+```
+
+Rust on Ubuntu (install rustup, then reopen the shell or run `source "$HOME/.cargo/env"`):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 - `nasm` — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
-- `x264` — required for `--enable-libx264` in the bundled FFmpeg build.
-- `libappindicator-gtk3` — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
+- `x264` / `libx264-dev` — required for `--enable-libx264` in the bundled FFmpeg build.
+- `libappindicator-gtk3` / `libayatana-appindicator3-dev` — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
-- **GStreamer + plugins /** `gst-libav` — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins.
-
-
+- **GStreamer + plugins / `gst-libav` / `gstreamer1.0-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins.
+- **`fuse2` (Arch) / `libfuse2` (Ubuntu)** — required to run/build AppImages on hosts that use FUSE2.
 
 ### Other distros
 
-Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node.js 18+, Rust, AppIndicator/StatusNotifier support, and Tauri Linux dependencies ([Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
+Install the equivalents of the packages above, or run `./scripts/check-build-deps.sh` and follow the printed hints. See also [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ## What gets downloaded / generated automatically
 

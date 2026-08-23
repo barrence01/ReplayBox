@@ -37,56 +37,26 @@ elapsed_between() {
   echo $((end - start))
 }
 
-need_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "error: missing required command '$1'" >&2
-    echo "See docs/BUILD.md for dependencies." >&2
-    exit 1
-  fi
-}
-
 echo "==> Checking host tools"
-need_cmd node
-need_cmd npm
-need_cmd cargo
-need_cmd rustc
-need_cmd git
-need_cmd make
-need_cmd pkg-config
-need_cmd file
-need_cmd sha256sum
-
-# NASM is required to compile bundled FFmpeg (no --disable-x86asm fallback).
-if ! command -v nasm >/dev/null 2>&1; then
-  echo "error: nasm is required to build bundled FFmpeg" >&2
-  echo "Install (Arch): pacman -S --needed nasm" >&2
-  echo "See docs/BUILD.md for details." >&2
-  exit 1
+"${ROOT}/scripts/check-build-deps.sh" --appimage
+if [[ -f "${ROOT}/.cache/replaybox-build-env" ]]; then
+  # shellcheck disable=SC1091
+  source "${ROOT}/.cache/replaybox-build-env"
 fi
-
-if ! pkg-config --exists x264; then
-  echo "error: libx264 not found (pkg-config x264)" >&2
-  echo "Install (Arch): pacman -S --needed x264" >&2
-  echo "See docs/BUILD.md for details." >&2
-  exit 1
+GST_PLUGIN_DIR="${REPLAYBOX_GST_PLUGIN_DIR:-}"
+if [[ -z "${GST_PLUGIN_DIR}" ]] && command -v pkg-config >/dev/null 2>&1; then
+  GST_PLUGIN_DIR="$(pkg-config --variable=pluginsdir gstreamer-1.0 2>/dev/null || true)"
 fi
-
-GST_PLUGIN_DIR="/usr/lib/gstreamer-1.0"
+if [[ -z "${GST_PLUGIN_DIR}" || ! -d "${GST_PLUGIN_DIR}" ]]; then
+  for candidate in /usr/lib/gstreamer-1.0 /usr/lib/x86_64-linux-gnu/gstreamer-1.0; do
+    if [[ -d "${candidate}" ]]; then
+      GST_PLUGIN_DIR="${candidate}"
+      break
+    fi
+  done
+fi
 if [[ ! -d "${GST_PLUGIN_DIR}" ]]; then
-  echo "error: GStreamer plugin directory not found: ${GST_PLUGIN_DIR}" >&2
-  echo "Install (Arch): pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav" >&2
-  echo "See docs/BUILD.md for details." >&2
-  exit 1
-fi
-
-# Need libav (or similarly named) plugins for WebKit <video> / H.264 in the AppImage.
-shopt -s nullglob
-LIBAV_PLUGINS=("${GST_PLUGIN_DIR}"/*libav* "${GST_PLUGIN_DIR}"/*gstlibav*)
-shopt -u nullglob
-if [[ ${#LIBAV_PLUGINS[@]} -eq 0 ]]; then
-  echo "error: no GStreamer libav plugins under ${GST_PLUGIN_DIR}" >&2
-  echo "Install (Arch): pacman -S --needed gst-libav" >&2
-  echo "See docs/BUILD.md for details." >&2
+  echo "error: GStreamer plugin directory not found" >&2
   exit 1
 fi
 

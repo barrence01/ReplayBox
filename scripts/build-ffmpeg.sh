@@ -39,14 +39,6 @@ CONFIGURE_FLAGS=(
   --enable-ffprobe
 )
 
-need_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "error: missing required command '$1'" >&2
-    echo "Install build deps (Arch): pacman -S --needed base-devel nasm pkgconf x264" >&2
-    exit 1
-  fi
-}
-
 mkdir -p "${CACHE_ROOT}" "${STAGING_DIR}"
 
 copy_to_staging() {
@@ -75,22 +67,7 @@ fi
 
 echo "FFmpeg cache miss — building ${FFMPEG_TAG} (${ARCH}, ${FINGERPRINT})"
 
-need_cmd git
-need_cmd make
-need_cmd pkg-config
-
-# NASM is required for FFmpeg x86 assembly; fail hard (no --disable-x86asm fallback).
-if ! command -v nasm >/dev/null 2>&1; then
-  echo "error: nasm is required to build bundled FFmpeg" >&2
-  echo "Install (Arch): pacman -S --needed nasm" >&2
-  exit 1
-fi
-
-if ! pkg-config --exists x264; then
-  echo "error: libx264 not found (pkg-config x264)" >&2
-  echo "Install (Arch): pacman -S --needed x264" >&2
-  exit 1
-fi
+"${ROOT}/scripts/check-build-deps.sh" --ffmpeg
 
 # Reuse a single source checkout; fetch tags as needed.
 if [[ ! -d "${SRC_DIR}/.git" ]]; then
