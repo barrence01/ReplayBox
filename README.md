@@ -14,11 +14,9 @@ ReplayBox helps you turn long game recordings into shareable clips. Browse your 
 
 ## Screenshots
 
-```
-[placeholder-image: library]
-[placeholder-image: session]
-[placeholder-image: editor]
-```
+| Library | Session | Editor |
+| --- | --- | --- |
+| ![Library](screenshots/library.png) | ![Session](screenshots/session.png) | ![Editor](screenshots/editor.png) |
 
 ## Features
 
