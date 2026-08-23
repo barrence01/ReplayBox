@@ -555,16 +555,24 @@ stage_license_files() {
 # tools.rs resolves $RESOURCE/ffmpeg/{ffmpeg,ffprobe}. Copy into that layout before re-pack.
 resolve_appdir_resource_dir() {
   local appdir="$1"
-  local preferred="${appdir}/usr/lib/replaybox"
-  local found=""
-  if [[ -d "${preferred}" ]]; then
-    printf '%s\n' "${preferred}"
-    return 0
-  fi
+  local candidate found=""
+  for candidate in \
+    "${appdir}/usr/lib/ReplayBox" \
+    "${appdir}/usr/lib/replaybox"; do
+    if [[ -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
   found="$(find "${appdir}" -path '*/resources/ffmpeg/ffmpeg' -type f 2>/dev/null | head -n 1 || true)"
   if [[ -n "${found}" ]]; then
     # …/resources/ffmpeg/ffmpeg → resource dir is two levels up from ffmpeg/
     printf '%s\n' "$(cd "$(dirname "${found}")/../.." && pwd)"
+    return 0
+  fi
+  found="$(find "${appdir}/usr/lib" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${found}" && -d "${found}" ]]; then
+    printf '%s\n' "${found}"
     return 0
   fi
   return 1
@@ -577,7 +585,7 @@ normalize_bundled_ffmpeg() {
 
   if ! resource="$(resolve_appdir_resource_dir "${appdir}")"; then
     echo "error: could not locate Tauri resource dir under ${appdir}" >&2
-    echo "Expected usr/lib/replaybox or …/resources/ffmpeg/ffmpeg" >&2
+    echo "Expected usr/lib/ReplayBox (or replaybox) or …/resources/ffmpeg/ffmpeg" >&2
     exit 1
   fi
 
@@ -606,9 +614,13 @@ normalize_bundled_ffmpeg() {
 
 assert_bundled_ffmpeg() {
   local base="$1"
-  local resource="${base}/usr/lib/replaybox"
-  local dest_dir="${resource}/ffmpeg"
-  local name bin
+  local resource dest_dir name bin
+
+  if ! resource="$(resolve_appdir_resource_dir "${base}")"; then
+    echo "error: could not locate Tauri resource dir under ${base}" >&2
+    exit 1
+  fi
+  dest_dir="${resource}/ffmpeg"
 
   echo "==> Asserting bundled FFmpeg at ${dest_dir}"
   if [[ ! -d "${resource}" ]]; then
