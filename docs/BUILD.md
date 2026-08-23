@@ -33,35 +33,6 @@ Or via npm:
 npm run build:appimage
 ```
 
-The script runs host checks, stages a **curated** set of GStreamer plugins into `src-tauri/.appimage-gst/` for WebKit `<video>` playback (fingerprint-cached; skips copy when unchanged), installs npm deps only when `node_modules` is missing or older than `package-lock.json`, then `tauri build --bundles appimage` with `GSTREAMER_PLUGINS_DIR` pointed at that curated stage so linuxdeploy does not pull all of `/usr/lib/gstreamer-1.0`. FFmpeg is prepared once via Tauri’s `beforeBuildCommand`. After the bundle, it normalizes the AppDir to the canonical AppImage layout: FreeDesktop id **`org.replaybox.replaybox`**, hicolor PNG sizes + scalable SVG, a single `usr/share/applications/org.replaybox.replaybox.desktop` with `Name=ReplayBox` / `Icon=org.replaybox.replaybox`, and root symlinks (`*.desktop`, `*.svg`, `.DirIcon` → scalable SVG, Waywallen-style). It clears `.cache/appimage/tmp/` scratch before that step (keeps cached `runtime-x86_64` / extracted `appimagetool`), asserts those entries before packing, re-packs atomically with `appimagetool` (temp file, then replace), **extracts the packed AppImage and asserts desktop/icon symlinks again**, and copies `*.AppImage` into `build/`. It honors `CARGO_TARGET_DIR` when set. It sets `NO_STRIP=true` so linuxdeploy works on Arch (bundled `strip` otherwise fails on modern system libraries).
-
-**Important:** `mksquashfs` / `appimagetool` need scratch space under `TMPDIR`. If `/tmp` (often a small tmpfs) is nearly full, the squashfs can silently store **0-byte** stubs for `usr/share/**` — then appimage-manager shows `Name=ReplayBox_0.1.0_amd64` (filename fallback) and no icon. The build script sets `TMPDIR` to `.cache/appimage/tmp/` on the build disk for this reason.
-
-At the end it prints phase timings (`gst | npm | tauri | icons | repack | total`). By default the terminal shows build milestones plus a heartbeat every ~10s during linuxdeploy (phase name, AppDir size, GST plugin count) so buffered output does not look hung; the full log is always in `build/appimage-build.log`. For a full linuxdeploy/Tauri stream on the terminal:
-
-```bash
-VERBOSE=1 ./scripts/build-appimage.sh
-# or follow the log while a quiet build runs:
-# tail -f build/appimage-build.log
-```
-
-**Smoke-test after packaging:** open the AppImage, open the editor, and play a local H.264 MP4. If the UI freezes, GStreamer plugins are incomplete — see Troubleshooting below.
-
-After changing the app icon, desktop `Name=`, or FreeDesktop id, clear any cached AppImage icons from **appimage-manager** (or similar) and re-integrate the new AppImage:
-
-```bash
-rm -f ~/.local/share/icons/hicolor/*/apps/appimage-*.png
-rm -f ~/.local/share/icons/hicolor/scalable/apps/appimage-*.svg
-# optional: clear file-manager thumbnails
-rm -rf ~/.cache/thumbnails/*
-```
-
-Then remove/re-add the AppImage in the manager so it re-extracts `Name=ReplayBox` and `Icon=org.replaybox.replaybox` from the bundled `.desktop` / scalable SVG at `usr/share/icons/hicolor/scalable/apps/org.replaybox.replaybox.svg` (root `.DirIcon` also points at that SVG). An old integration (e.g. previous PNG/`Icon=replaybox`, or a 0-byte host icon) may still show a stale icon or `Name=ReplayBox_0.1.0_amd64` (filename fallback) until you re-integrate.
-
-FFmpeg/FFprobe showing as “found” in Settings does **not** cover editor playback: the editor uses WebKitGTK + GStreamer. Without plugins in the AppImage, opening the editor can freeze the UI.
-
-ReplayBox allows only **one running instance**. A second launch focuses (and shows) the existing window — including when it was hidden to the tray.
-
 For day-to-day development:
 
 ```bash
@@ -73,13 +44,17 @@ That command:
 1. Prepares bundled FFmpeg (`prepare:ffmpeg`)
 2. Starts the Tauri + Vite dev app
 
+
+
 ## Binaries
 
 The `src-tauri` crate defines one binary. `Cargo.toml` sets `default-run = "replaybox"`.
 
-| Binary | Path | Purpose |
-|--------|------|---------|
+
+| Binary      | Path          | Purpose  |
+| ----------- | ------------- | -------- |
 | `replaybox` | `src/main.rs` | Tauri UI |
+
 
 ```bash
 cd src-tauri
@@ -104,26 +79,30 @@ Rescan and folder scans run asynchronously; the UI listens for `catalog-scan-sta
 
 Application files are stored under XDG directories resolved by Tauri `PathResolver` (`identifier`: `org.replaybox`):
 
-| Kind | Path |
-|------|------|
-| Config (`settings.json`) | `~/.config/org.replaybox/` |
-| Data (`replaybox.db`) | `~/.local/share/org.replaybox/` |
-| Logs | `~/.local/share/org.replaybox/logs/` |
-| Cache (thumbnails) | `~/.cache/org.replaybox/thumbnails/` |
-| Cache (preview / playback) | `~/.cache/org.replaybox/playback/` |
+
+| Kind                       | Path                                 |
+| -------------------------- | ------------------------------------ |
+| Config (`settings.json`)   | `~/.config/org.replaybox/`           |
+| Data (`replaybox.db`)      | `~/.local/share/org.replaybox/`      |
+| Logs                       | `~/.local/share/org.replaybox/logs/` |
+| Cache (thumbnails)         | `~/.cache/org.replaybox/thumbnails/` |
+| Cache (preview / playback) | `~/.cache/org.replaybox/playback/`   |
+
 
 The **preview cache** holds remuxed or transcoded MP4 copies used for in-app playback when the original file is not WebView-friendly. Each entry is `{recordingId}.mp4` with a `{recordingId}.json` sidecar (source mtime/size and strategy). Original recordings stay in the watch folder. Entries older than 24 hours are removed automatically; total size is capped by **Preview cache** in Settings (default 5 GB).
 
 Logs are created when the app **runs** (dev or installed binary), not by `./scripts/build-all.sh` alone.
 
-| File | Contents | Retention |
-|------|----------|-----------|
-| `replaybox.log.*` | Application events (catalog scan, cache jobs, errors) | 7 days |
-| `ffmpeg.log.*` | Raw stderr from preview-cache FFmpeg jobs | 7 days |
+
+| File              | Contents                                              | Retention |
+| ----------------- | ----------------------------------------------------- | --------- |
+| `replaybox.log.*` | Application events (catalog scan, cache jobs, errors) | 7 days    |
+| `ffmpeg.log.*`    | Raw stderr from preview-cache FFmpeg jobs             | 7 days    |
+
 
 - **Rotation:** one log file per day, named `{basename}.YYYY-MM-DD` (for example `replaybox.log.2026-08-22`).
 - **Retention:** at most 7 days of rotated log files; older files are removed on startup.
-- **Default level (`replaybox.log` only):** `info`.
+- **Default level (**`replaybox.log` **only):** `info`.
 - **Override:** set `RUST_LOG` before starting the app, for example `RUST_LOG=debug npm run tauri:dev`.
 - **Debug builds:** app logs go to the daily file and to stderr.
 - **Release builds:** app logs go to the daily file only.
@@ -137,6 +116,8 @@ To inspect today's logs:
 tail -f ~/.local/share/org.replaybox/logs/replaybox.log.$(date +%F)
 tail -f ~/.local/share/org.replaybox/logs/ffmpeg.log.$(date +%F)
 ```
+
+
 
 ## System tray
 
@@ -152,10 +133,12 @@ Settings → **Start ReplayBox in the tray when you log in** uses XDG Autostart 
 
 ## What `build-all` does
 
-1. Verifies host tools (`node`, `npm`, `cargo`, `rustc`, `git`, `make`, `pkg-config`, **`nasm`**, **libx264**)
+1. Verifies host tools (`node`, `npm`, `cargo`, `rustc`, `git`, `make`, `pkg-config`, `nasm`, **libx264**)
 2. Runs `npm install`
 3. Runs `npm run prepare:ffmpeg`
 4. Runs `npm run tauri:build` (frontend + Rust + app bundle)
+
+
 
 ## System packages (install yourself)
 
@@ -189,11 +172,13 @@ sudo pacman -S --needed \
   gst-libav
 ```
 
-- **`nasm`** — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
-- **`x264`** — required for `--enable-libx264` in the bundled FFmpeg build.
-- **`libappindicator-gtk3`** — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
+- `nasm` — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
+- `x264` — required for `--enable-libx264` in the bundled FFmpeg build.
+- `libappindicator-gtk3` — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
-- **GStreamer + plugins / `gst-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins.
+- **GStreamer + plugins /** `gst-libav` — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins.
+
+
 
 ### Other distros
 
@@ -201,23 +186,27 @@ Install the equivalents of: a C toolchain, NASM, pkg-config, libx264 (dev), Node
 
 ## What gets downloaded / generated automatically
 
-| Source | When | Where | Notes |
-|--------|------|--------|--------|
-| **npm packages** | `npm install` | `node_modules/` | From the npm registry |
-| **FFmpeg source** (Git tag `n7.1`) | First `prepare:ffmpeg` (cache miss) | `.cache/ffmpeg/src/` | Cloned from GitHub mirror (fallback: `git.ffmpeg.org`) |
-| **Compiled FFmpeg / FFprobe** | Same build | `.cache/ffmpeg/n7.1-<arch>-<fingerprint>/` | Cached; later runs only copy |
-| **Staged FFmpeg tools** | Every prepare | `src-tauri/resources/ffmpeg/{ffmpeg,ffprobe}` | Used by the app / Tauri bundle |
-| **Rust crates** | `cargo` / `tauri build` | Cargo registry + target dir | Downloaded by Cargo as needed |
-| **App binary / installers** | `tauri build` | `src-tauri/target/release/` (+ bundle formats if enabled) | Production output |
-| **AppImage copy** | `build:appimage` | `build/*.AppImage` | Copied from Tauri bundle output |
-| **Staged GStreamer plugins** | `build:appimage` | `src-tauri/.appimage-gst/` | Curated plugins; also exported as `GSTREAMER_PLUGINS_DIR` for linuxdeploy |
-| **appimagetool extract** | AppImage re-pack | `.cache/appimage/appimagetool/` | Extracted once from Tauri’s linuxdeploy plugin (gitignored) |
-| **AppImage type2 runtime** | AppImage re-pack | `.cache/appimage/runtime-x86_64` | Avoids re-download on every re-pack (gitignored) |
-| **AppImage scratch TMPDIR** | AppImage normalize/re-pack | `.cache/appimage/tmp/` | Cleared before icon normalize; used by `mksquashfs` / extract asserts (not `/tmp`) |
+
+| Source                             | When                                | Where                                                     | Notes                                                                              |
+| ---------------------------------- | ----------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **npm packages**                   | `npm install`                       | `node_modules/`                                           | From the npm registry                                                              |
+| **FFmpeg source** (Git tag `n7.1`) | First `prepare:ffmpeg` (cache miss) | `.cache/ffmpeg/src/`                                      | Cloned from GitHub mirror (fallback: `git.ffmpeg.org`)                             |
+| **Compiled FFmpeg / FFprobe**      | Same build                          | `.cache/ffmpeg/n7.1-<arch>-<fingerprint>/`                | Cached; later runs only copy                                                       |
+| **Staged FFmpeg tools**            | Every prepare                       | `src-tauri/resources/ffmpeg/{ffmpeg,ffprobe}`             | Used by the app / Tauri bundle                                                     |
+| **Rust crates**                    | `cargo` / `tauri build`             | Cargo registry + target dir                               | Downloaded by Cargo as needed                                                      |
+| **App binary / installers**        | `tauri build`                       | `src-tauri/target/release/` (+ bundle formats if enabled) | Production output                                                                  |
+| **AppImage copy**                  | `build:appimage`                    | `build/*.AppImage`                                        | Copied from Tauri bundle output                                                    |
+| **Staged GStreamer plugins**       | `build:appimage`                    | `src-tauri/.appimage-gst/`                                | Curated plugins; also exported as `GSTREAMER_PLUGINS_DIR` for linuxdeploy          |
+| **appimagetool extract**           | AppImage re-pack                    | `.cache/appimage/appimagetool/`                           | Extracted once from Tauri’s linuxdeploy plugin (gitignored)                        |
+| **AppImage type2 runtime**         | AppImage re-pack                    | `.cache/appimage/runtime-x86_64`                          | Avoids re-download on every re-pack (gitignored)                                   |
+| **AppImage scratch TMPDIR**        | AppImage normalize/re-pack          | `.cache/appimage/tmp/`                                    | Cleared before icon normalize; used by `mksquashfs` / extract asserts (not `/tmp`) |
+
+
+
 
 ### FFmpeg cache behavior
 
-- Cache key: tag **`n7.1`** + CPU architecture + fingerprint of configure flags in `scripts/build-ffmpeg.sh`
+- Cache key: tag `n7.1` + CPU architecture + fingerprint of configure flags in `scripts/build-ffmpeg.sh`
 - **Cache hit:** no Git fetch/compile; copies binaries into `resources/ffmpeg/`
 - **Cache miss:** clone/checkout, `./configure`, `make`, install into the cache prefix, then stage
 
@@ -225,14 +214,18 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 
 ## Individual commands
 
-| Command | Purpose |
-|---------|---------|
-| `npm run prepare:ffmpeg` | Build/stage bundled FFmpeg only |
-| `npm run tauri:dev` | FFmpeg + Tauri/Vite dev |
-| `npm run tauri:build` | FFmpeg + production Tauri build |
-| `npm run build:all` / `./scripts/build-all.sh` | Full check + install + FFmpeg + production build |
-| `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/` |
-| `VERBOSE=1 ./scripts/build-appimage.sh` | Same, with verbose Tauri/linuxdeploy output on the terminal |
+
+| Command                                                  | Purpose                                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------- |
+| `npm run prepare:ffmpeg`                                 | Build/stage bundled FFmpeg only                             |
+| `npm run tauri:dev`                                      | FFmpeg + Tauri/Vite dev                                     |
+| `npm run tauri:build`                                    | FFmpeg + production Tauri build                             |
+| `npm run build:all` / `./scripts/build-all.sh`           | Full check + install + FFmpeg + production build            |
+| `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/`          |
+| `VERBOSE=1 ./scripts/build-appimage.sh`                  | Same, with verbose Tauri/linuxdeploy output on the terminal |
+
+
+
 
 ## License (redistribution)
 
@@ -242,16 +235,19 @@ The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg wit
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---------|----------------|
-| `could not find Cargo.toml` in repo root | Run npm scripts from the root, or `cd src-tauri` / use `--manifest-path` |
-| `resource path .../ffmpeg doesn't exist` | Run `npm run prepare:ffmpeg` |
-| Tray icon missing on GNOME | Install AppIndicator/StatusNotifier support for your DE |
-| `nasm is required to build bundled FFmpeg` | Install `nasm` |
-| `libx264 not found` | Install `x264` (and headers / pkg-config file) |
-| Slow first build | Normal: compiling FFmpeg from source can take several minutes |
-| `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev` |
-| Vite `The service is no longer running` after crash | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev` |
-| `failed to run linuxdeploy` when bundling AppImage | On Arch, use `./scripts/build-appimage.sh` (sets `NO_STRIP=true`), or export `NO_STRIP=true` before `tauri build` |
-| AppImage freezes when opening the editor | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh` (clears/restages `src-tauri/.appimage-gst/` when the fingerprint changes). Smoke-test: open the editor and play a local H.264 MP4. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
-| Second launch opens another window | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance` |
+
+| Symptom                                                  | Likely cause                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `could not find Cargo.toml` in repo root                 | Run npm scripts from the root, or `cd src-tauri` / use `--manifest-path`                                                                                                                                                                                                                                                                               |
+| `resource path .../ffmpeg doesn't exist`                 | Run `npm run prepare:ffmpeg`                                                                                                                                                                                                                                                                                                                           |
+| Tray icon missing on GNOME                               | Install AppIndicator/StatusNotifier support for your DE                                                                                                                                                                                                                                                                                                |
+| `nasm is required to build bundled FFmpeg`               | Install `nasm`                                                                                                                                                                                                                                                                                                                                         |
+| `libx264 not found`                                      | Install `x264` (and headers / pkg-config file)                                                                                                                                                                                                                                                                                                         |
+| Slow first build                                         | Normal: compiling FFmpeg from source can take several minutes                                                                                                                                                                                                                                                                                          |
+| `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev`                                                                                                                                                                |
+| Vite `The service is no longer running` after crash      | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev`                                                                                                                                                                                                                                                         |
+| `failed to run linuxdeploy` when bundling AppImage       | On Arch, use `./scripts/build-appimage.sh` (sets `NO_STRIP=true`), or export `NO_STRIP=true` before `tauri build`                                                                                                                                                                                                                                      |
+| AppImage freezes when opening the editor                 | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh` (clears/restages `src-tauri/.appimage-gst/` when the fingerprint changes). Smoke-test: open the editor and play a local H.264 MP4. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
+| Second launch opens another window                       | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance`                                                                                                                                                                                                                  |
+
+
