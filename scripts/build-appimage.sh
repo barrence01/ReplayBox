@@ -551,6 +551,87 @@ stage_license_files() {
   cp -f "${ROOT}/licenses/LGPL-2.1.txt" "${dest}/LGPL-2.1.txt"
 }
 
+# Tauri preserves bundle.resources paths under $RESOURCE (e.g. resources/ffmpeg/ffmpeg).
+# tools.rs resolves $RESOURCE/ffmpeg/{ffmpeg,ffprobe}. Copy into that layout before re-pack.
+resolve_appdir_resource_dir() {
+  local appdir="$1"
+  local preferred="${appdir}/usr/lib/replaybox"
+  local found=""
+  if [[ -d "${preferred}" ]]; then
+    printf '%s\n' "${preferred}"
+    return 0
+  fi
+  found="$(find "${appdir}" -path '*/resources/ffmpeg/ffmpeg' -type f 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${found}" ]]; then
+    # …/resources/ffmpeg/ffmpeg → resource dir is two levels up from ffmpeg/
+    printf '%s\n' "$(cd "$(dirname "${found}")/../.." && pwd)"
+    return 0
+  fi
+  return 1
+}
+
+normalize_bundled_ffmpeg() {
+  local appdir="$1"
+  local resource src_dir dest_dir name src dest
+  echo "==> Normalizing bundled FFmpeg paths in AppDir"
+
+  if ! resource="$(resolve_appdir_resource_dir "${appdir}")"; then
+    echo "error: could not locate Tauri resource dir under ${appdir}" >&2
+    echo "Expected usr/lib/replaybox or …/resources/ffmpeg/ffmpeg" >&2
+    exit 1
+  fi
+
+  src_dir="${resource}/resources/ffmpeg"
+  if [[ ! -f "${src_dir}/ffmpeg" || ! -f "${src_dir}/ffprobe" ]]; then
+    src_dir="${ROOT}/src-tauri/resources/ffmpeg"
+  fi
+  if [[ ! -f "${src_dir}/ffmpeg" || ! -f "${src_dir}/ffprobe" ]]; then
+    echo "error: bundled ffmpeg/ffprobe not found under ${resource}/resources/ffmpeg" >&2
+    echo "or staging ${ROOT}/src-tauri/resources/ffmpeg — run npm run prepare:ffmpeg" >&2
+    exit 1
+  fi
+
+  dest_dir="${resource}/ffmpeg"
+  mkdir -p "${dest_dir}"
+  for name in ffmpeg ffprobe; do
+    src="${src_dir}/${name}"
+    dest="${dest_dir}/${name}"
+    if [[ "${src}" -ef "${dest}" ]]; then
+      continue
+    fi
+    install -m 755 "${src}" "${dest}"
+  done
+  echo "    Staged bundled FFmpeg into ${dest_dir}/"
+}
+
+assert_bundled_ffmpeg() {
+  local base="$1"
+  local resource="${base}/usr/lib/replaybox"
+  local dest_dir="${resource}/ffmpeg"
+  local name bin
+
+  echo "==> Asserting bundled FFmpeg at ${dest_dir}"
+  if [[ ! -d "${resource}" ]]; then
+    echo "error: resource dir missing: ${resource}" >&2
+    exit 1
+  fi
+  for name in ffmpeg ffprobe; do
+    bin="${dest_dir}/${name}"
+    if [[ ! -s "${bin}" ]]; then
+      echo "error: bundled ${name} missing or empty: ${bin}" >&2
+      exit 1
+    fi
+    if [[ ! -x "${bin}" ]]; then
+      echo "error: bundled ${name} is not executable: ${bin}" >&2
+      exit 1
+    fi
+    if ! "${bin}" -version >/dev/null 2>&1; then
+      echo "error: bundled ${name} failed -version: ${bin}" >&2
+      exit 1
+    fi
+  done
+}
+
 assert_license_files() {
   local base="$1"
   local prefix="${base}/usr/share/licenses/replaybox"
@@ -616,6 +697,7 @@ assert_appdir_ready() {
   fi
 
   assert_license_files "${appdir}"
+  assert_bundled_ffmpeg "${appdir}"
 }
 
 assert_appimage_contents() {
@@ -678,6 +760,7 @@ assert_appimage_contents() {
       exit 1
     fi
     assert_license_files "squashfs-root"
+    assert_bundled_ffmpeg "squashfs-root"
   )
   rm -rf "${extract_dir}"
 }
@@ -692,6 +775,7 @@ fi
 clean_appimage_tmpdir
 normalize_appdir_icons "${APPDIR}"
 stage_license_files "${APPDIR}"
+normalize_bundled_ffmpeg "${APPDIR}"
 assert_appdir_ready "${APPDIR}"
 mark T_icons
 
