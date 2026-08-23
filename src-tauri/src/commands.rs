@@ -215,9 +215,13 @@ pub fn update_settings(
 fn sync_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let autostart = app.autolaunch();
     let currently = autostart.is_enabled().map_err(|e| e.to_string())?;
-    if enabled && !currently {
+    if enabled {
+        // Re-enable so the desktop entry picks up current args (e.g. --hidden).
+        if currently {
+            let _ = autostart.disable();
+        }
         autostart.enable().map_err(|e| e.to_string())?;
-    } else if !enabled && currently {
+    } else if currently {
         autostart.disable().map_err(|e| e.to_string())?;
     }
     Ok(())

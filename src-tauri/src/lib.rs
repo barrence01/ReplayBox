@@ -29,8 +29,15 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tray_status::TrayIconState;
 
+/// Passed via XDG Autostart so login launch stays in the tray.
+const AUTOSTART_HIDDEN_ARG: &str = "--hidden";
+
 struct TrayMenuState {
     pause_item: MenuItem<tauri::Wry>,
+}
+
+fn started_hidden() -> bool {
+    std::env::args().any(|a| a == AUTOSTART_HIDDEN_ARG)
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -38,6 +45,7 @@ fn show_main_window(app: &AppHandle) {
         commands::resume_from_tray(app, state.inner());
     }
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -130,7 +138,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            Some(vec![AUTOSTART_HIDDEN_ARG]),
         ))
         .setup(|app| {
             let paths = AppPaths::resolve(app)?;
@@ -174,6 +182,15 @@ pub fn run() {
                 let launch = state.settings.lock().launch_on_startup;
                 if let Err(e) = commands::sync_autostart_on_boot(app.handle(), launch) {
                     tracing::warn!("autostart sync: {e}");
+                }
+            }
+
+            let hide_to_tray = started_hidden();
+            if hide_to_tray {
+                let state = app.state::<Arc<AppState>>();
+                commands::suspend_for_tray(app.handle(), state.inner());
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
                 }
             }
 

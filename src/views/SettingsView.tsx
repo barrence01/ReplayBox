@@ -339,7 +339,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
                 setDraft((d) => ({ ...d, launchOnStartup: e.target.checked }))
               }
             />
-            Start ReplayBox when you log in
+            Start ReplayBox in the tray when you log in
           </label>
         </section>
 

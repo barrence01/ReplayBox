@@ -148,7 +148,7 @@ On **KDE Plasma**, the tray icon usually works out of the box via StatusNotifier
 
 ## Launch on login
 
-Settings → **Start ReplayBox when you log in** uses XDG Autostart (`tauri-plugin-autostart`). Saving syncs `~/.config/autostart/`.
+Settings → **Start ReplayBox in the tray when you log in** uses XDG Autostart (`tauri-plugin-autostart`) with `--hidden`. Saving syncs `~/.config/autostart/`. Login launch stays in the system tray until you open the window from the tray.
 
 ## What `build-all` does
 
