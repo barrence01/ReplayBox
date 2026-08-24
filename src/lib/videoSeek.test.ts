@@ -37,11 +37,11 @@ describe("clampToSeekableSec", () => {
 
 describe("isSeekAtTargetSec", () => {
   it("accepts within default tolerance", () => {
-    expect(isSeekAtTargetSec(0.48, 0.5)).toBe(true);
+    expect(isSeekAtTargetSec(0.35, 0.5)).toBe(true);
   });
 
   it("rejects when outside tolerance", () => {
-    expect(isSeekAtTargetSec(1, 5)).toBe(false);
+    expect(isSeekAtTargetSec(0.2, 0.5)).toBe(false);
   });
 });
 

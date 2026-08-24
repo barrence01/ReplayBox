@@ -26,7 +26,7 @@ export function applyVideoSeek(video: HTMLVideoElement, targetSec: number): void
   video.currentTime = targetSec;
 }
 
-/** Scrub-only seek; fastSeek when available for lower-latency preview frames. */
+/** fastSeek when available for lower-latency frames. */
 export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void {
   if (typeof video.fastSeek === "function") {
     video.fastSeek(targetSec);
@@ -37,8 +37,9 @@ export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void
 
 export const SEEK_SETTLE_MS = 500;
 /** Max wall-clock time for a locked seek before giving up. */
-export const SEEK_MAX_MS = 2500;
-export const SEEK_TOLERANCE_SEC = 0.05;
+export const SEEK_MAX_MS = 5500;
+export const SEEK_TOLERANCE_SEC = 0.2;
+export const LOCKED_SEEK_MAX_ATTEMPTS = 10;
 
 export function isSeekAtTargetSec(
   currentSec: number,

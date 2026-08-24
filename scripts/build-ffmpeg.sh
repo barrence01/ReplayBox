@@ -69,6 +69,21 @@ echo "FFmpeg cache miss — building ${FFMPEG_TAG} (${ARCH}, ${FINGERPRINT})"
 
 "${ROOT}/scripts/check-build-deps.sh" --ffmpeg
 
+ensure_ffmpeg_remote() {
+  # Broken/empty .git/config (no remotes) is common after interrupted clones or cache copies.
+  if ! git -C "${SRC_DIR}" remote get-url origin >/dev/null 2>&1; then
+    git -C "${SRC_DIR}" remote add origin "${MIRROR_URL}" 2>/dev/null \
+      || git -C "${SRC_DIR}" remote set-url origin "${MIRROR_URL}"
+  fi
+}
+
+fetch_ffmpeg_tag() {
+  local url="$1"
+  git -C "${SRC_DIR}" remote set-url origin "${url}"
+  git -C "${SRC_DIR}" fetch --tags --force origin "${FFMPEG_TAG}" 2>/dev/null \
+    || git -C "${SRC_DIR}" fetch --tags --force origin "refs/tags/${FFMPEG_TAG}:refs/tags/${FFMPEG_TAG}"
+}
+
 # Reuse a single source checkout; fetch tags as needed.
 if [[ ! -d "${SRC_DIR}/.git" ]]; then
   echo "Cloning FFmpeg…"
@@ -80,8 +95,15 @@ if [[ ! -d "${SRC_DIR}/.git" ]]; then
   fi
 else
   echo "Updating FFmpeg source…"
-  git -C "${SRC_DIR}" fetch --tags --force origin "${FFMPEG_TAG}" 2>/dev/null \
-    || git -C "${SRC_DIR}" fetch --tags --force origin "refs/tags/${FFMPEG_TAG}:refs/tags/${FFMPEG_TAG}"
+  ensure_ffmpeg_remote
+  if ! fetch_ffmpeg_tag "${MIRROR_URL}" && ! fetch_ffmpeg_tag "${REPO_URL}"; then
+    if git -C "${SRC_DIR}" rev-parse -q --verify "refs/tags/${FFMPEG_TAG}" >/dev/null; then
+      echo "warning: could not fetch ${FFMPEG_TAG}; using existing local tag" >&2
+    else
+      echo "error: failed to fetch FFmpeg tag ${FFMPEG_TAG} and it is not present locally" >&2
+      exit 1
+    fi
+  fi
   git -C "${SRC_DIR}" checkout -f "tags/${FFMPEG_TAG}" 2>/dev/null \
     || git -C "${SRC_DIR}" checkout -f "${FFMPEG_TAG}"
 fi

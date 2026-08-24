@@ -128,17 +128,7 @@ function renderEditor(overrides: Partial<Parameters<typeof EditorView>[0]> = {})
   track.releasePointerCapture = vi.fn();
   track.hasPointerCapture = vi.fn().mockReturnValue(true);
 
-  const sliderLabels = view.container.querySelectorAll(
-    ".timeline__sliders label",
-  );
-  const startSlider = sliderLabels[0]?.querySelector(
-    'input[type="range"]',
-  ) as HTMLInputElement;
-  const endSlider = sliderLabels[1]?.querySelector(
-    'input[type="range"]',
-  ) as HTMLInputElement;
-
-  return { ...view, track, startSlider, endSlider };
+  return { ...view, track };
 }
 
 describe("EditorView timeline wiring", () => {
@@ -207,57 +197,49 @@ describe("EditorView timeline wiring", () => {
   });
 
   it("previews trim without seeking until commit", () => {
-    const { startSlider } = renderEditor();
+    const { track } = renderEditor();
 
-    fireEvent.change(startSlider, { target: { value: "3000" } });
+    fireEvent.pointerDown(track, { clientX: 0, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 300, pointerId: 1 });
 
     expect(playerSpies.seekAndLock).not.toHaveBeenCalled();
     expect(screen.getByText("00:00:03.000 – 00:00:10.000")).toBeTruthy();
   });
 
   it("seeks on trim commit when video time is far from playhead", () => {
-    const { container, startSlider } = renderEditor();
+    const { track } = renderEditor();
     playerSpies.getCurrentMs.mockReturnValue(0);
 
-    fireEvent.change(startSlider, { target: { value: "6000" } });
+    fireEvent.pointerDown(track, { clientX: 0, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 600, pointerId: 1 });
     expect(screen.getByText("00:00:06.000 – 00:00:10.000")).toBeTruthy();
-
-    const committed = container.querySelectorAll(
-      '.timeline__sliders input[type="range"]',
-    )[0] as HTMLInputElement;
-    expect(committed.value).toBe("6000");
-    fireEvent.pointerUp(committed);
+    fireEvent.pointerUp(track, { clientX: 600, pointerId: 1 });
 
     expect(playerSpies.seekAndLock).toHaveBeenCalledWith(6000);
   });
 
   it("skips seek on trim commit when video already near target", () => {
-    const { container, startSlider } = renderEditor();
+    const { track } = renderEditor();
     playerSpies.getCurrentMs.mockReturnValue(6000);
 
-    fireEvent.change(startSlider, { target: { value: "6000" } });
+    fireEvent.pointerDown(track, { clientX: 0, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 600, pointerId: 1 });
     expect(screen.getByText("00:00:06.000 – 00:00:10.000")).toBeTruthy();
-
-    const committed = container.querySelectorAll(
-      '.timeline__sliders input[type="range"]',
-    )[0] as HTMLInputElement;
-    fireEvent.pointerUp(committed);
+    fireEvent.pointerUp(track, { clientX: 600, pointerId: 1 });
 
     expect(playerSpies.seekAndLock).not.toHaveBeenCalled();
   });
 
   it("skips seek on trim commit while timeline is locked", () => {
-    const { container, startSlider } = renderEditor();
+    const { track } = renderEditor();
 
     act(() => {
       latestPlayerProps?.onSeekingChange?.(true);
     });
 
-    fireEvent.change(startSlider, { target: { value: "6000" } });
-    const committed = container.querySelectorAll(
-      '.timeline__sliders input[type="range"]',
-    )[0] as HTMLInputElement;
-    fireEvent.pointerUp(committed);
+    fireEvent.pointerDown(track, { clientX: 0, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 600, pointerId: 1 });
+    fireEvent.pointerUp(track, { clientX: 600, pointerId: 1 });
 
     expect(playerSpies.seekAndLock).not.toHaveBeenCalled();
   });
