@@ -180,6 +180,25 @@ describe("Timeline", () => {
     expect(container.querySelector('input[type="range"]')).toBeNull();
   });
 
+  it("sets grab cursor class when hovering playhead", () => {
+    const { track } = renderTimeline();
+
+    fireEvent.pointerMove(track, { clientX: 500, pointerId: 1 });
+    expect(track.classList.contains("timeline__track--over-playhead")).toBe(true);
+    expect(track.classList.contains("timeline__track--over-handle")).toBe(false);
+  });
+
+  it("sets resize cursor class when hovering trim handles", () => {
+    const { track } = renderTimeline();
+
+    fireEvent.pointerMove(track, { clientX: 100, pointerId: 1 });
+    expect(track.classList.contains("timeline__track--over-handle")).toBe(true);
+
+    fireEvent.pointerMove(track, { clientX: 900, pointerId: 1 });
+    expect(track.classList.contains("timeline__track--over-handle")).toBe(true);
+    expect(track.classList.contains("timeline__track--over-playhead")).toBe(false);
+  });
+
   it("toggles scrubbing class while dragging", () => {
     const { track } = renderTimeline();
 

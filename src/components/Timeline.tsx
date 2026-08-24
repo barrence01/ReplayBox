@@ -53,6 +53,7 @@ export function Timeline({
   const dragModeRef = useRef<DragMode>("playhead");
   const startXRef = useRef(0);
   const [scrubbing, setScrubbing] = useState(false);
+  const [hoverTarget, setHoverTarget] = useState<TimelineHitTarget>("track");
   const duration = effectiveDurationMs(durationMs);
   const startPct = (startMs / duration) * 100;
   const endPct = (endMs / duration) * 100;
@@ -88,6 +89,14 @@ export function Timeline({
       return "track";
     }
     return hitTestHandle(clientX, rect, duration, startMs, endMs, currentMs);
+  }
+
+  function updateHover(clientX: number) {
+    if (disabled) {
+      setHoverTarget("track");
+      return;
+    }
+    setHoverTarget(hitTarget(clientX));
   }
 
   function releasePointer(target: HTMLDivElement, pointerId: number) {
@@ -168,6 +177,10 @@ export function Timeline({
           "timeline__track",
           scrubbing ? "timeline__track--scrubbing" : "",
           disabled ? "timeline__track--locked" : "",
+          hoverTarget === "playhead" ? "timeline__track--over-playhead" : "",
+          hoverTarget === "start" || hoverTarget === "end"
+            ? "timeline__track--over-handle"
+            : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -191,6 +204,7 @@ export function Timeline({
           startXRef.current = e.clientX;
 
           const target = hitTarget(e.clientX);
+          setHoverTarget(target);
           if (target === "start") {
             dragModeRef.current = "start";
             return;
@@ -203,12 +217,15 @@ export function Timeline({
         }}
         onPointerMove={(e) => {
           if (!pointerActiveRef.current) {
+            updateHover(e.clientX);
             return;
           }
           if (dragModeRef.current === "start" || dragModeRef.current === "end") {
+            setHoverTarget(dragModeRef.current);
             applyTrimDrag(e.clientX);
             return;
           }
+          setHoverTarget("playhead");
           maybeStartPlayheadDrag(e.clientX);
           if (draggingRef.current) {
             onScrub(playheadMsFromEvent(e.clientX));
@@ -216,9 +233,16 @@ export function Timeline({
         }}
         onPointerUp={(e) => {
           finishPointer(e);
+          updateHover(e.clientX);
         }}
         onPointerCancel={(e) => {
           finishPointer(e);
+          setHoverTarget("track");
+        }}
+        onPointerLeave={() => {
+          if (!pointerActiveRef.current) {
+            setHoverTarget("track");
+          }
         }}
       >
         <div

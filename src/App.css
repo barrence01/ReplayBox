@@ -1045,8 +1045,20 @@ select {
   user-select: none;
 }
 
+.timeline__track--over-playhead {
+  cursor: grab;
+}
+
+.timeline__track--over-handle {
+  cursor: ew-resize;
+}
+
 .timeline__track--scrubbing {
   cursor: grabbing;
+}
+
+.timeline__track--scrubbing.timeline__track--over-handle {
+  cursor: ew-resize;
 }
 
 .timeline__track--locked {
