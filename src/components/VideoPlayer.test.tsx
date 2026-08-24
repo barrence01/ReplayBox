@@ -588,13 +588,6 @@ describe("VideoPlayer", () => {
     });
     video.dispatchEvent(new Event("loadedmetadata"));
 
-    // Seek priming warms demuxer at +1s before applying the pending user seek.
-    expect(currentTimeSec).toBe(1);
-
-    video.dispatchEvent(new Event("seeked"));
-    expect(currentTimeSec).toBe(0);
-
-    video.dispatchEvent(new Event("seeked"));
     expect(currentTimeSec).toBe(0.5);
   });
 
@@ -2323,7 +2316,7 @@ describe("VideoPlayer", () => {
     });
 
     video.dispatchEvent(new Event("loadedmetadata"));
-    expect(fastSeek).toHaveBeenCalledWith(1);
+    expect(fastSeek).not.toHaveBeenCalled();
     expect(currentTimeSec).toBe(0);
 
     onTimeUpdate.mockClear();
