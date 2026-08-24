@@ -771,7 +771,7 @@ describe("VideoPlayer", () => {
     expect(onTimeUpdate).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2600);
+      await vi.advanceTimersByTimeAsync(5600);
     });
 
     expect(onTimeUpdate).toHaveBeenCalledWith(1000);
@@ -1705,7 +1705,7 @@ describe("VideoPlayer", () => {
     expect(onTimeUpdate).toHaveBeenCalledWith(2500);
   });
 
-  it("seekAndLock uses fastSeek and retries up to three times", async () => {
+  it("seekAndLock uses fastSeek and retries currentTime on settle timeouts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     getPlaybackInfoMock.mockResolvedValue({
@@ -1791,7 +1791,7 @@ describe("VideoPlayer", () => {
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
     act(() => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(4000);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -1849,7 +1849,7 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(8000);
 
     act(() => {
-      vi.advanceTimersByTime(1500);
+      vi.advanceTimersByTime(5000);
     });
 
     expect(onTimeUpdate).toHaveBeenCalledWith(1200);
@@ -1910,7 +1910,7 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(8000);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(5000);
     });
 
     await waitFor(() => {
@@ -2042,7 +2042,7 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(2500);
 
     act(() => {
-      vi.advanceTimersByTime(2600);
+      vi.advanceTimersByTime(5600);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -2141,7 +2141,7 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(8000);
 
     act(() => {
-      vi.advanceTimersByTime(2600);
+      vi.advanceTimersByTime(5600);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
