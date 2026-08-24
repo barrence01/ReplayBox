@@ -1292,7 +1292,7 @@ describe("VideoPlayer", () => {
     expect(fastSeek).toHaveBeenLastCalledWith(8);
   });
 
-  it("endScrubAndLock uses precise seek without fastSeek", async () => {
+  it("endScrubAndLock uses fastSeek when available", async () => {
     getPlaybackInfoMock.mockResolvedValue({
       url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
       mode: "cache",
@@ -1345,8 +1345,7 @@ describe("VideoPlayer", () => {
     fastSeek.mockClear();
 
     ref.current?.endScrubAndLock(5000);
-    expect(fastSeek).not.toHaveBeenCalled();
-    expect(currentTimeSec).toBe(5);
+    expect(fastSeek).toHaveBeenCalledWith(5);
   });
 
   it("endScrubAndLock early-completes when already near target", async () => {
@@ -1707,6 +1706,87 @@ describe("VideoPlayer", () => {
     currentTimeSec = 2.5;
     act(() => {
       video.dispatchEvent(new Event("seeked"));
+    });
+
+    expect(onSeekingChange).toHaveBeenLastCalledWith(false);
+    expect(onTimeUpdate).toHaveBeenCalledWith(2500);
+  });
+
+  it("seekAndLock uses fastSeek and retries up to three times", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      mode: "cache",
+    });
+
+    const onSeekingChange = vi.fn();
+    const onTimeUpdate = vi.fn();
+    const ref = createRef<VideoPlayerHandle>();
+    const { container } = render(
+      <VideoPlayer
+        ref={ref}
+        recordingId="rec-1"
+        startMs={0}
+        endMs={10_000}
+        onTimeUpdate={onTimeUpdate}
+        onPlayingChange={() => undefined}
+        onSeekingChange={onSeekingChange}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    const fastSeek = vi.fn();
+    Object.defineProperty(video, "fastSeek", {
+      configurable: true,
+      value: fastSeek,
+    });
+    Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
+    Object.defineProperty(video, "seekable", {
+      configurable: true,
+      value: { length: 1, start: () => 0, end: () => 10 },
+    });
+    let currentTimeSec = 0;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => currentTimeSec,
+      set: () => undefined,
+    });
+
+    ref.current?.seekAndLock(2500);
+    expect(fastSeek).toHaveBeenCalledTimes(1);
+    expect(fastSeek).toHaveBeenCalledWith(2.5);
+    expect(onSeekingChange).toHaveBeenCalledWith(true);
+
+    act(() => {
+      video.dispatchEvent(new Event("seeked"));
+    });
+    expect(fastSeek).toHaveBeenCalledTimes(2);
+    expect(onSeekingChange).toHaveBeenLastCalledWith(true);
+
+    act(() => {
+      video.dispatchEvent(new Event("seeked"));
+    });
+    expect(fastSeek).toHaveBeenCalledTimes(3);
+    expect(onTimeUpdate).not.toHaveBeenCalled();
+
+    act(() => {
+      video.dispatchEvent(new Event("seeked"));
+    });
+    expect(fastSeek).toHaveBeenCalledTimes(3);
+    expect(onSeekingChange).toHaveBeenLastCalledWith(true);
+
+    act(() => {
+      vi.advanceTimersByTime(500);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -2243,20 +2323,20 @@ describe("VideoPlayer", () => {
     });
 
     video.dispatchEvent(new Event("loadedmetadata"));
-    // Priming seek starts at +1s; scrub cancels it before it settles.
-    expect(currentTimeSec).toBe(1);
+    expect(fastSeek).toHaveBeenCalledWith(1);
+    expect(currentTimeSec).toBe(0);
 
     onTimeUpdate.mockClear();
     onSeekingChange.mockClear();
+    fastSeek.mockClear();
 
     ref.current?.beginScrub();
     ref.current?.scrubTo(5000);
-    // fastSeek previews without settling currentTime; lock seek must stay open.
     expect(fastSeek).toHaveBeenCalledWith(5);
-    expect(currentTimeSec).toBe(1);
+    expect(currentTimeSec).toBe(0);
 
     ref.current?.endScrubAndLock(5000);
-    expect(currentTimeSec).toBe(5);
+    expect(fastSeek).toHaveBeenCalledWith(5);
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
     currentTimeSec = 0;

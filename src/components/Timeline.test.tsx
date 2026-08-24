@@ -30,13 +30,6 @@ function renderTimeline(overrides: Partial<Parameters<typeof Timeline>[0]> = {})
 
   const view = render(<Timeline {...props} />);
   const track = view.container.querySelector(".timeline__track") as HTMLDivElement;
-  const sliderLabels = view.container.querySelectorAll(".timeline__sliders label");
-  const startSlider = sliderLabels[0]?.querySelector(
-    'input[type="range"]',
-  ) as HTMLInputElement;
-  const endSlider = sliderLabels[1]?.querySelector(
-    'input[type="range"]',
-  ) as HTMLInputElement;
 
   Object.defineProperty(track, "getBoundingClientRect", {
     configurable: true,
@@ -59,8 +52,6 @@ function renderTimeline(overrides: Partial<Parameters<typeof Timeline>[0]> = {})
   return {
     ...view,
     track,
-    startSlider,
-    endSlider,
     onStartChange,
     onEndChange,
     onStartCommit,
@@ -76,10 +67,10 @@ describe("Timeline", () => {
   it("seeks on quick click without starting scrub", () => {
     const { track, onSeekClick, onScrubStart, onScrubEnd } = renderTimeline();
 
-    fireEvent.pointerDown(track, { clientX: 500, button: 0, pointerId: 1 });
-    fireEvent.pointerUp(track, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerDown(track, { clientX: 400, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(track, { clientX: 400, pointerId: 1 });
 
-    expect(onSeekClick).toHaveBeenCalledWith(5000);
+    expect(onSeekClick).toHaveBeenCalledWith(4000);
     expect(onScrubStart).not.toHaveBeenCalled();
     expect(onScrubEnd).not.toHaveBeenCalled();
   });
@@ -101,12 +92,12 @@ describe("Timeline", () => {
   it("does not start scrub for small pointer movement", () => {
     const { track, onScrubStart, onSeekClick } = renderTimeline();
 
-    fireEvent.pointerDown(track, { clientX: 500, button: 0, pointerId: 1 });
-    fireEvent.pointerMove(track, { clientX: 502, pointerId: 1 });
-    fireEvent.pointerUp(track, { clientX: 502, pointerId: 1 });
+    fireEvent.pointerDown(track, { clientX: 400, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 402, pointerId: 1 });
+    fireEvent.pointerUp(track, { clientX: 402, pointerId: 1 });
 
     expect(onScrubStart).not.toHaveBeenCalled();
-    expect(onSeekClick).toHaveBeenCalledWith(5020);
+    expect(onSeekClick).toHaveBeenCalledWith(4020);
   });
 
   it("ends scrub on pointercancel", () => {
@@ -122,7 +113,7 @@ describe("Timeline", () => {
   it("clamps scrub ms to trim range", () => {
     const { track, onScrub } = renderTimeline();
 
-    fireEvent.pointerDown(track, { clientX: 50, button: 0, pointerId: 1 });
+    fireEvent.pointerDown(track, { clientX: 400, button: 0, pointerId: 1 });
     fireEvent.pointerMove(track, { clientX: 60, pointerId: 1 });
     expect(onScrub).toHaveBeenCalledWith(1000);
 
@@ -132,60 +123,61 @@ describe("Timeline", () => {
   });
 
   it("ignores pointerdown when disabled", () => {
-    const { track, onSeekClick, onScrubStart } = renderTimeline({
+    const { track, onSeekClick, onScrubStart, onStartChange } = renderTimeline({
       disabled: true,
     });
 
-    fireEvent.pointerDown(track, { clientX: 500, button: 0, pointerId: 1 });
-    fireEvent.pointerUp(track, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerDown(track, { clientX: 400, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(track, { clientX: 400, pointerId: 1 });
+    fireEvent.pointerDown(track, { clientX: 100, button: 0, pointerId: 2 });
+    fireEvent.pointerMove(track, { clientX: 300, pointerId: 2 });
 
     expect(onSeekClick).not.toHaveBeenCalled();
     expect(onScrubStart).not.toHaveBeenCalled();
+    expect(onStartChange).not.toHaveBeenCalled();
   });
 
   it("ignores non-primary button", () => {
     const { track, onSeekClick } = renderTimeline();
 
-    fireEvent.pointerDown(track, { clientX: 500, button: 2, pointerId: 1 });
+    fireEvent.pointerDown(track, { clientX: 400, button: 2, pointerId: 1 });
 
     expect(onSeekClick).not.toHaveBeenCalled();
   });
 
-  it("calls onStartChange on drag without commit", () => {
-    const { startSlider, onStartChange, onStartCommit } = renderTimeline();
+  it("drags start handle without seeking playhead", () => {
+    const { track, onStartChange, onStartCommit, onSeekClick, onScrubStart } =
+      renderTimeline();
 
-    fireEvent.change(startSlider, { target: { value: "3000" } });
+    fireEvent.pointerDown(track, { clientX: 100, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 300, pointerId: 1 });
+    fireEvent.pointerUp(track, { clientX: 300, pointerId: 1 });
 
     expect(onStartChange).toHaveBeenCalledWith(3000);
-    expect(onStartCommit).not.toHaveBeenCalled();
-  });
-
-  it("calls onStartCommit on pointer up", () => {
-    const { startSlider, onStartCommit } = renderTimeline();
-
-    startSlider.value = "3000";
-    fireEvent.change(startSlider, { target: { value: "3000" } });
-    fireEvent.pointerUp(startSlider);
-
     expect(onStartCommit).toHaveBeenCalledWith(3000);
+    expect(onSeekClick).not.toHaveBeenCalled();
+    expect(onScrubStart).not.toHaveBeenCalled();
   });
 
-  it("calls onEndChange on drag without commit", () => {
-    const { endSlider, onEndChange, onEndCommit } = renderTimeline();
+  it("drags end handle without seeking playhead", () => {
+    const { track, onEndChange, onEndCommit, onSeekClick } = renderTimeline();
 
-    fireEvent.change(endSlider, { target: { value: "7000" } });
+    fireEvent.pointerDown(track, { clientX: 900, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(track, { clientX: 700, pointerId: 1 });
+    fireEvent.pointerUp(track, { clientX: 700, pointerId: 1 });
 
     expect(onEndChange).toHaveBeenCalledWith(7000);
-    expect(onEndCommit).not.toHaveBeenCalled();
+    expect(onEndCommit).toHaveBeenCalledWith(7000);
+    expect(onSeekClick).not.toHaveBeenCalled();
   });
 
-  it("calls onEndCommit on pointer up", () => {
-    const { endSlider, onEndCommit } = renderTimeline();
+  it("renders playhead and trim handles without range sliders", () => {
+    const { container } = renderTimeline();
 
-    endSlider.value = "7000";
-    fireEvent.pointerUp(endSlider);
-
-    expect(onEndCommit).toHaveBeenCalledWith(7000);
+    expect(container.querySelector(".timeline__playhead")).toBeTruthy();
+    expect(container.querySelector(".timeline__handle--start")).toBeTruthy();
+    expect(container.querySelector(".timeline__handle--end")).toBeTruthy();
+    expect(container.querySelector('input[type="range"]')).toBeNull();
   });
 
   it("toggles scrubbing class while dragging", () => {
@@ -201,32 +193,12 @@ describe("Timeline", () => {
     expect(track.classList.contains("timeline__track--scrubbing")).toBe(false);
   });
 
-  it("disables trim ranges when locked", () => {
-    const { startSlider, endSlider, track } = renderTimeline({
+  it("marks track locked when disabled", () => {
+    const { track } = renderTimeline({
       disabled: true,
     });
 
-    expect(startSlider.disabled).toBe(true);
-    expect(endSlider.disabled).toBe(true);
     expect(track.classList.contains("timeline__track--locked")).toBe(true);
-  });
-
-  it("calls onStartCommit on key up", () => {
-    const { startSlider, onStartCommit } = renderTimeline();
-
-    startSlider.value = "3000";
-    fireEvent.keyUp(startSlider);
-
-    expect(onStartCommit).toHaveBeenCalledWith(3000);
-  });
-
-  it("calls onEndCommit on key up", () => {
-    const { endSlider, onEndCommit } = renderTimeline();
-
-    endSlider.value = "7000";
-    fireEvent.keyUp(endSlider);
-
-    expect(onEndCommit).toHaveBeenCalledWith(7000);
   });
 
   it("captures and releases pointer on scrub", () => {

@@ -2,10 +2,15 @@ import { useRef, useState } from "react";
 import { formatTimestamp } from "../lib/api";
 import {
   effectiveDurationMs,
+  hitTestHandle,
+  msFromPointer,
   playheadMsFromPointer,
+  type TimelineHitTarget,
 } from "../lib/timelinePosition";
 
 const DRAG_THRESHOLD_PX = 4;
+
+type DragMode = "playhead" | "start" | "end";
 
 interface Props {
   durationMs: number;
@@ -45,6 +50,7 @@ export function Timeline({
   const trackRef = useRef<HTMLDivElement>(null);
   const pointerActiveRef = useRef(false);
   const draggingRef = useRef(false);
+  const dragModeRef = useRef<DragMode>("playhead");
   const startXRef = useRef(0);
   const [scrubbing, setScrubbing] = useState(false);
   const duration = effectiveDurationMs(durationMs);
@@ -52,12 +58,36 @@ export function Timeline({
   const endPct = (endMs / duration) * 100;
   const playPct = (currentMs / duration) * 100;
 
-  function msFromEvent(clientX: number): number {
+  function playheadMsFromEvent(clientX: number): number {
     const rect = trackRef.current?.getBoundingClientRect();
     if (!rect) {
       return currentMs;
     }
     return playheadMsFromPointer(clientX, rect, duration, startMs, endMs);
+  }
+
+  function trimMsFromEvent(clientX: number): number {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return dragModeRef.current === "end" ? endMs : startMs;
+    }
+    return msFromPointer(clientX, rect, duration);
+  }
+
+  function clampStartMs(value: number): number {
+    return Math.min(Math.max(value, 0), endMs - 1);
+  }
+
+  function clampEndMs(value: number): number {
+    return Math.max(Math.min(value, duration), startMs + 1);
+  }
+
+  function hitTarget(clientX: number): TimelineHitTarget {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return "track";
+    }
+    return hitTestHandle(clientX, rect, duration, startMs, endMs, currentMs);
   }
 
   function releasePointer(target: HTMLDivElement, pointerId: number) {
@@ -71,10 +101,25 @@ export function Timeline({
       return;
     }
 
-    const ms = msFromEvent(e.clientX);
+    const mode = dragModeRef.current;
     pointerActiveRef.current = false;
     releasePointer(e.currentTarget, e.pointerId);
 
+    if (mode === "start") {
+      draggingRef.current = false;
+      setScrubbing(false);
+      onStartCommit(clampStartMs(trimMsFromEvent(e.clientX)));
+      return;
+    }
+
+    if (mode === "end") {
+      draggingRef.current = false;
+      setScrubbing(false);
+      onEndCommit(clampEndMs(trimMsFromEvent(e.clientX)));
+      return;
+    }
+
+    const ms = playheadMsFromEvent(e.clientX);
     if (draggingRef.current) {
       draggingRef.current = false;
       setScrubbing(false);
@@ -85,7 +130,7 @@ export function Timeline({
     onSeekClick(ms);
   }
 
-  function maybeStartDrag(clientX: number) {
+  function maybeStartPlayheadDrag(clientX: number) {
     if (draggingRef.current) {
       return;
     }
@@ -95,23 +140,19 @@ export function Timeline({
     draggingRef.current = true;
     setScrubbing(true);
     onScrubStart();
-    onScrub(msFromEvent(clientX));
+    onScrub(playheadMsFromEvent(clientX));
   }
 
-  function clampStartMs(value: number): number {
-    return Math.min(value, endMs - 1);
-  }
-
-  function clampEndMs(value: number): number {
-    return Math.max(value, startMs + 1);
-  }
-
-  function commitStart(value: number) {
-    onStartCommit(clampStartMs(value));
-  }
-
-  function commitEnd(value: number) {
-    onEndCommit(clampEndMs(value));
+  function applyTrimDrag(clientX: number) {
+    if (!draggingRef.current) {
+      draggingRef.current = true;
+      setScrubbing(true);
+    }
+    if (dragModeRef.current === "start") {
+      onStartChange(clampStartMs(trimMsFromEvent(clientX)));
+      return;
+    }
+    onEndChange(clampEndMs(trimMsFromEvent(clientX)));
   }
 
   return (
@@ -148,14 +189,29 @@ export function Timeline({
           pointerActiveRef.current = true;
           draggingRef.current = false;
           startXRef.current = e.clientX;
+
+          const target = hitTarget(e.clientX);
+          if (target === "start") {
+            dragModeRef.current = "start";
+            return;
+          }
+          if (target === "end") {
+            dragModeRef.current = "end";
+            return;
+          }
+          dragModeRef.current = "playhead";
         }}
         onPointerMove={(e) => {
           if (!pointerActiveRef.current) {
             return;
           }
-          maybeStartDrag(e.clientX);
+          if (dragModeRef.current === "start" || dragModeRef.current === "end") {
+            applyTrimDrag(e.clientX);
+            return;
+          }
+          maybeStartPlayheadDrag(e.clientX);
           if (draggingRef.current) {
-            onScrub(msFromEvent(e.clientX));
+            onScrub(playheadMsFromEvent(e.clientX));
           }
         }}
         onPointerUp={(e) => {
@@ -169,58 +225,26 @@ export function Timeline({
           className="timeline__selection"
           style={{ left: `${startPct}%`, width: `${endPct - startPct}%` }}
         />
-        <div className="timeline__playhead" style={{ left: `${playPct}%` }} />
+        <div
+          className="timeline__handle timeline__handle--start"
+          style={{ left: `${startPct}%` }}
+          aria-hidden="true"
+        />
+        <div
+          className="timeline__handle timeline__handle--end"
+          style={{ left: `${endPct}%` }}
+          aria-hidden="true"
+        />
+        <div
+          className="timeline__playhead"
+          style={{ left: `${playPct}%` }}
+          aria-hidden="true"
+        />
       </div>
 
-      <div className="timeline__sliders">
-        <label>
-          Start
-          <input
-            type="range"
-            min={0}
-            max={duration}
-            step={1}
-            value={startMs}
-            disabled={disabled}
-            onChange={(e) => {
-              onStartChange(clampStartMs(Number(e.target.value)));
-            }}
-            onPointerUp={(e) => {
-              commitStart(Number(e.currentTarget.value));
-            }}
-            onPointerCancel={(e) => {
-              commitStart(Number(e.currentTarget.value));
-            }}
-            onKeyUp={(e) => {
-              commitStart(Number(e.currentTarget.value));
-            }}
-          />
-          <span>{formatTimestamp(startMs)}</span>
-        </label>
-        <label>
-          End
-          <input
-            type="range"
-            min={0}
-            max={duration}
-            step={1}
-            value={endMs}
-            disabled={disabled}
-            onChange={(e) => {
-              onEndChange(clampEndMs(Number(e.target.value)));
-            }}
-            onPointerUp={(e) => {
-              commitEnd(Number(e.currentTarget.value));
-            }}
-            onPointerCancel={(e) => {
-              commitEnd(Number(e.currentTarget.value));
-            }}
-            onKeyUp={(e) => {
-              commitEnd(Number(e.currentTarget.value));
-            }}
-          />
-          <span>{formatTimestamp(endMs)}</span>
-        </label>
+      <div className="timeline__trim-labels">
+        <span>Start {formatTimestamp(startMs)}</span>
+        <span>End {formatTimestamp(endMs)}</span>
       </div>
     </div>
   );
