@@ -15,6 +15,7 @@ import {
   SEEK_MAX_MS,
   SEEK_SETTLE_MS,
   applyScrubSeek,
+  applyVideoSeek,
   clampToSeekableSec,
   isSeekAtTargetSec,
 } from "../lib/videoSeek";
@@ -102,6 +103,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     const queuedLockedSeekMsRef = useRef<number | null>(null);
     const queuedLockedSeekResumeRef = useRef<boolean | undefined>(undefined);
     const resumeAfterSeekRef = useRef(false);
+    const pendingSeekAfterFallbackRef = useRef<number | null>(null);
+    const requestFallbackRef = useRef<(level: 1 | 2) => Promise<void>>(
+      async () => undefined,
+    );
     const loadTimeoutRef = useRef<number | null>(null);
     const seekTimeoutRef = useRef<number | null>(null);
     const preparingPollRef = useRef<number | null>(null);
@@ -357,13 +362,17 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       const video = videoRef.current;
       const intendedMs = seekTargetMsRef.current;
       resumeAfterSeekRef.current = false;
+      const shouldTranscode =
+        playbackMode === "direct" &&
+        fallbackLevel.current < 2 &&
+        intendedMs !== null;
       finishSeek();
-      if (intendedMs !== null) {
-        onTimeUpdate(clampToSelection(intendedMs));
-        return;
-      }
       if (video) {
         onTimeUpdate(clampToSelection(video.currentTime * 1000));
+      }
+      if (shouldTranscode && intendedMs !== null) {
+        pendingSeekAfterFallbackRef.current = intendedMs;
+        void requestFallbackRef.current(2);
       }
     }
 
@@ -397,24 +406,23 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
-      if (fromTimeout) {
-        const startedAt = seekStartedAtRef.current ?? Date.now();
-        if (Date.now() - startedAt >= SEEK_MAX_MS) {
-          failSeek();
-          return;
-        }
+      if (!fromTimeout) {
+        return;
+      }
+
+      const startedAt = seekStartedAtRef.current ?? Date.now();
+      if (Date.now() - startedAt >= SEEK_MAX_MS) {
+        failSeek();
+        return;
       }
 
       if (seekAttemptRef.current < LOCKED_SEEK_MAX_ATTEMPTS) {
         seekAttemptRef.current += 1;
-        applyScrubSeek(video, targetSec);
-        if (fromTimeout) {
-          armSeekTimeout();
-        }
-        return;
-      }
-
-      if (!fromTimeout) {
+        console.info(
+          `[ReplayBox seek] ${new Date().toISOString()} attempt ${seekAttemptRef.current}/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
+        );
+        applyVideoSeek(video, targetSec);
+        armSeekTimeout();
         return;
       }
 
@@ -447,6 +455,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
       seekAttemptRef.current = 1;
       armSeekTimeout();
+      console.info(
+        `[ReplayBox seek] ${new Date().toISOString()} attempt 1/${LOCKED_SEEK_MAX_ATTEMPTS} via fastSeek target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
+      );
       applyScrubSeek(video, targetSec);
     }
 
@@ -654,6 +665,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       }
     }
 
+    requestFallbackRef.current = requestFallback;
+
     async function handleLoadTimeout() {
       if (playbackMode === "direct" && fallbackLevel.current < 1) {
         await requestFallback(1);
@@ -687,6 +700,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       queuedLockedSeekMsRef.current = null;
       queuedLockedSeekResumeRef.current = undefined;
       resumeAfterSeekRef.current = false;
+      pendingSeekAfterFallbackRef.current = null;
       setSeekingUi(false);
       setLoading(true);
       setPreparing(false);
@@ -838,6 +852,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
               onDurationChange?.(video.duration * 1000);
             }
             if (isScrubbingRef.current) {
+              return;
+            }
+            const fallbackSeekMs = pendingSeekAfterFallbackRef.current;
+            if (fallbackSeekMs !== null) {
+              pendingSeekAfterFallbackRef.current = null;
+              startLockedSeek(fallbackSeekMs);
               return;
             }
             if (lockedSeekRef.current && pendingSeekMsRef.current !== null) {
