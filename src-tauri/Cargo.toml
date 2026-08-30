@@ -1,6 +1,6 @@
 [package]
 name = "replaybox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Game recording catalog and VFR-safe clip editor"
 authors = ["William Barrence"]
 license = "MIT"
