@@ -325,7 +325,7 @@ mod tests {
                 copy_collision: None,
                 trim_mode: "fast".into(),
                 crf: None,
-                use_nvenc: None,
+                prefer_hardware_encoding: None,
             },
             dest: PathBuf::from("/tmp/out.mp4"),
         }
@@ -338,7 +338,7 @@ mod tests {
             request: CompressRequest {
                 recording_id: id.into(),
                 crf: Some(26),
-                use_nvenc: Some(false),
+                prefer_hardware_encoding: Some(false),
                 output_mode: "copy".into(),
                 copy_collision: None,
                 fps: Some(60),

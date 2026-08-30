@@ -160,7 +160,7 @@ pub fn run() {
             let resource_dir = tools::discover_resource_dir(app.path().resource_dir().ok());
             let conn = db::open_db(&paths.db_path())?;
             let state = AppState::new(paths.clone(), resource_dir, conn, settings.clone());
-            let _ = state.nvenc_available();
+            let _ = state.hardware_encoding_status();
             playback_cache::run_cache_cleanup(
                 &paths.playback_cache_dir(),
                 &playback_cache::CleanupPolicy::from_settings(&settings),
@@ -226,6 +226,7 @@ pub fn run() {
             commands::sync_catalog_delta,
             commands::check_tools,
             commands::nvenc_available,
+            commands::hardware_encoding_status,
             commands::resolved_tool_paths,
             commands::get_playback_info,
             commands::get_job_status,

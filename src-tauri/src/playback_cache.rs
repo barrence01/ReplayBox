@@ -20,27 +20,29 @@ const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub struct PreviewEncodeOptions {
     pub crf: u8,
     pub scale: u8,
-    pub use_nvenc: bool,
+    pub encoder: ffmpeg::VideoEncoder,
     pub profile_key: String,
 }
 
 impl PreviewEncodeOptions {
-    pub fn from_settings(settings: &Settings, use_nvenc: bool) -> Self {
+    pub fn from_settings(settings: &Settings, encoder: ffmpeg::VideoEncoder) -> Self {
         let crf = settings.preview_crf;
         let scale = settings.preview_scale;
-        let profile_key = preview_profile_key(crf, scale, use_nvenc);
+        let profile_key = preview_profile_key(crf, scale, encoder);
         Self {
             crf,
             scale,
-            use_nvenc,
+            encoder,
             profile_key,
         }
     }
 }
 
-pub fn preview_profile_key(crf: u8, scale: u8, use_nvenc: bool) -> String {
-    let encoder = if use_nvenc { "nvenc" } else { "x264" };
-    format!("crf{crf}:s{scale}:30fps:{encoder}")
+pub fn preview_profile_key(crf: u8, scale: u8, encoder: ffmpeg::VideoEncoder) -> String {
+    format!(
+        "crf{crf}:s{scale}:30fps:{}",
+        encoder.profile_suffix()
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -285,7 +287,7 @@ fn run_ffmpeg_cache(
             for arg in ffmpeg::preview_transcode_args(
                 encode_opts.crf,
                 encode_opts.scale,
-                encode_opts.use_nvenc,
+                encode_opts.encoder,
             ) {
                 cmd.arg(arg);
             }
@@ -766,12 +768,16 @@ mod tests {
     #[test]
     fn preview_profile_key_includes_encoder_scale_and_fps() {
         assert_eq!(
-            preview_profile_key(28, 2, true),
+            preview_profile_key(28, 2, ffmpeg::VideoEncoder::Nvenc),
             "crf28:s2:30fps:nvenc"
         );
         assert_eq!(
-            preview_profile_key(28, 4, false),
+            preview_profile_key(28, 4, ffmpeg::VideoEncoder::Software),
             "crf28:s4:30fps:x264"
+        );
+        assert_eq!(
+            preview_profile_key(28, 2, ffmpeg::VideoEncoder::Vaapi),
+            "crf28:s2:30fps:vaapi"
         );
     }
 
@@ -800,8 +806,8 @@ mod tests {
         let opts = PreviewEncodeOptions {
             crf: 30,
             scale: 2,
-            use_nvenc: false,
-            profile_key: preview_profile_key(30, 2, false),
+            encoder: ffmpeg::VideoEncoder::Software,
+            profile_key: preview_profile_key(30, 2, ffmpeg::VideoEncoder::Software),
         };
 
         assert!(is_cache_valid(
@@ -832,15 +838,15 @@ mod tests {
             mtime,
             size,
             PlaybackStrategy::Transcode,
-            Some(preview_profile_key(28, 2, false)),
+            Some(preview_profile_key(28, 2, ffmpeg::VideoEncoder::Software)),
         )
         .unwrap();
 
         let opts = PreviewEncodeOptions {
             crf: 28,
             scale: 4,
-            use_nvenc: false,
-            profile_key: preview_profile_key(28, 4, false),
+            encoder: ffmpeg::VideoEncoder::Software,
+            profile_key: preview_profile_key(28, 4, ffmpeg::VideoEncoder::Software),
         };
 
         assert!(is_cache_valid(
@@ -865,7 +871,7 @@ mod tests {
 
         let id = "rec-1";
         fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
-        let profile = preview_profile_key(28, 2, false);
+        let profile = preview_profile_key(28, 2, ffmpeg::VideoEncoder::Software);
         write_sidecar(
             &cache_dir,
             id,
@@ -879,7 +885,7 @@ mod tests {
         let opts = PreviewEncodeOptions {
             crf: 28,
             scale: 2,
-            use_nvenc: false,
+            encoder: ffmpeg::VideoEncoder::Software,
             profile_key: profile,
         };
 
@@ -918,8 +924,8 @@ mod tests {
         let opts = PreviewEncodeOptions {
             crf: 28,
             scale: 2,
-            use_nvenc: false,
-            profile_key: preview_profile_key(28, 2, false),
+            encoder: ffmpeg::VideoEncoder::Software,
+            profile_key: preview_profile_key(28, 2, ffmpeg::VideoEncoder::Software),
         };
 
         assert!(is_cache_valid(

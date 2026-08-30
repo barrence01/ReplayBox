@@ -42,7 +42,8 @@ pub struct TrimRequest {
     #[serde(default = "default_trim_mode")]
     pub trim_mode: String,
     pub crf: Option<u8>,
-    pub use_nvenc: Option<bool>,
+    #[serde(default, alias = "useNvenc")]
+    pub prefer_hardware_encoding: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +51,8 @@ pub struct TrimRequest {
 pub struct CompressRequest {
     pub recording_id: String,
     pub crf: Option<u8>,
-    pub use_nvenc: Option<bool>,
+    #[serde(default, alias = "useNvenc")]
+    pub prefer_hardware_encoding: Option<bool>,
     pub output_mode: String,
     pub copy_collision: Option<String>,
     pub fps: Option<u8>,

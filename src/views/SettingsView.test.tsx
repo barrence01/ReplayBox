@@ -5,17 +5,17 @@ import type { Settings } from "../types";
 import { SettingsView } from "../views/SettingsView";
 
 const openMock = vi.fn();
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => openMock(...args),
+}));
 const checkWatchDirMock = vi.fn();
 const resolvedToolPathsMock = vi.fn();
 const getPlaybackCacheLimitsMock = vi.fn();
 const getPlaybackCacheStatsMock = vi.fn();
 const clearPlaybackCacheMock = vi.fn();
 const clearAllCacheMock = vi.fn();
-const nvencAvailableMock = vi.fn();
-
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: (...args: unknown[]) => openMock(...args),
-}));
+const hardwareEncodingStatusMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   checkWatchDir: (...args: unknown[]) => checkWatchDirMock(...args),
@@ -26,15 +26,26 @@ vi.mock("../lib/api", () => ({
     getPlaybackCacheStatsMock(...args),
   clearPlaybackCache: (...args: unknown[]) => clearPlaybackCacheMock(...args),
   clearAllCache: (...args: unknown[]) => clearAllCacheMock(...args),
-  nvencAvailable: (...args: unknown[]) => nvencAvailableMock(...args),
+  nvencAvailable: vi.fn(),
+  hardwareEncodingStatus: (...args: unknown[]) =>
+    hardwareEncodingStatusMock(...args),
 }));
+
+const baseHwStatus = {
+  active: "nvenc" as const,
+  nvencCompiled: true,
+  nvencRuntime: true,
+  vaapiCompiled: true,
+  vaapiRuntime: false,
+  vaapiDevice: null,
+};
 
 const baseSettings: Settings = {
   watchDir: "/recordings",
   ffmpegPath: "",
   ffprobePath: "",
   compressCrf: 26,
-  preferNvenc: true,
+  preferHardwareEncoding: true,
   launchOnStartup: false,
   playbackCacheMaxGb: 5,
   previewCrf: 28,
@@ -62,9 +73,9 @@ describe("SettingsView watch folder access", () => {
     getPlaybackCacheStatsMock.mockReset();
     clearPlaybackCacheMock.mockReset();
     clearAllCacheMock.mockReset();
-    nvencAvailableMock.mockReset();
+    hardwareEncodingStatusMock.mockReset();
     resolvedToolPathsMock.mockResolvedValue(["", ""]);
-    nvencAvailableMock.mockResolvedValue(true);
+    hardwareEncodingStatusMock.mockResolvedValue(baseHwStatus);
     getPlaybackCacheLimitsMock.mockResolvedValue(baseLimits);
     getPlaybackCacheStatsMock.mockResolvedValue({
       usedBytes: 2 * 1024 * 1024 * 1024,
@@ -289,7 +300,7 @@ describe("SettingsView watch folder access", () => {
     expect(clearPlaybackCacheMock).not.toHaveBeenCalled();
   });
 
-  it("shows preview settings and nvenc status", async () => {
+  it("shows encoder status in encoding section", async () => {
     render(
       <SettingsView
         settings={baseSettings}
@@ -299,11 +310,57 @@ describe("SettingsView watch folder access", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/Preview quality/i)).toBeTruthy();
-      expect(screen.getByLabelText(/Preview resolution/i)).toBeTruthy();
-      expect(
-        screen.getByText(/NVENC available \(used automatically for preview\)/i),
-      ).toBeTruthy();
+      expect(screen.getByText(/Encoder:/i)).toBeTruthy();
+      expect(screen.getByText("NVENC")).toBeTruthy();
+    });
+    expect(screen.queryByText(/Active encoder/i)).toBeNull();
+    expect(screen.queryByText(/compiled/i)).toBeNull();
+  });
+
+  it("shows VAAPI when NVENC is unavailable", async () => {
+    hardwareEncodingStatusMock.mockResolvedValue({
+      ...baseHwStatus,
+      active: "vaapi",
+      nvencRuntime: false,
+      vaapiRuntime: true,
+    });
+
+    render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("VAAPI")).toBeTruthy();
+    });
+  });
+
+  it("shows Software when hardware encoding is disabled", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("NVENC")).toBeTruthy();
+    });
+
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: /Prefer hardware encoding when available/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Software")).toBeTruthy();
     });
   });
 

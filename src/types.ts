@@ -26,12 +26,23 @@ export interface Recording {
   indexedAt: string;
 }
 
+export type VideoEncoder = "software" | "nvenc" | "vaapi";
+
+export interface HardwareEncodingStatus {
+  active: VideoEncoder;
+  nvencCompiled: boolean;
+  nvencRuntime: boolean;
+  vaapiCompiled: boolean;
+  vaapiRuntime: boolean;
+  vaapiDevice: string | null;
+}
+
 export interface Settings {
   watchDir: string;
   ffmpegPath: string;
   ffprobePath: string;
   compressCrf: number;
-  preferNvenc: boolean;
+  preferHardwareEncoding: boolean;
   launchOnStartup: boolean;
   playbackCacheMaxGb: number;
   previewCrf: number;
@@ -49,13 +60,13 @@ export interface TrimRequest {
   copyCollision?: "overwrite" | "unique" | null;
   trimMode?: TrimMode;
   crf?: number;
-  useNvenc?: boolean;
+  preferHardwareEncoding?: boolean;
 }
 
 export interface CompressRequest {
   recordingId: string;
   crf?: number;
-  useNvenc?: boolean;
+  preferHardwareEncoding?: boolean;
   outputMode: "copy" | "replace";
   copyCollision?: "overwrite" | "unique" | null;
   fps?: number;

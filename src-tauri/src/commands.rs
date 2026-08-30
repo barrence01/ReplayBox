@@ -284,18 +284,23 @@ pub async fn update_settings(
         let path = state.paths.settings_path();
         let prev = state.settings.lock().clone();
         let prev_ffmpeg = state.ffmpeg_bin();
-        let prev_nvenc = state.nvenc_available();
+        let prev_profile = playback_cache::PreviewEncodeOptions::from_settings(
+            &prev,
+            state.preview_video_encoder(),
+        );
         settings.save(&path)?;
         *state.settings.lock() = settings.clone();
         let next_ffmpeg = state.ffmpeg_bin();
-        if next_ffmpeg != prev_ffmpeg {
+        if next_ffmpeg != prev_ffmpeg
+            || prev.prefer_hardware_encoding != settings.prefer_hardware_encoding
+        {
             state.encoder_cache.lock().invalidate();
         }
-        let next_nvenc = state.nvenc_available();
-        let profile_changed = playback_cache::PreviewEncodeOptions::from_settings(&prev, prev_nvenc)
-            .profile_key
-            != playback_cache::PreviewEncodeOptions::from_settings(&settings, next_nvenc)
-                .profile_key;
+        let next_profile = playback_cache::PreviewEncodeOptions::from_settings(
+            &settings,
+            state.preview_video_encoder(),
+        );
+        let profile_changed = prev_profile.profile_key != next_profile.profile_key;
         sync_autostart(&app, settings.launch_on_startup)?;
         if profile_changed {
             for job in state.preview_queue.cancel_all() {
@@ -480,6 +485,14 @@ pub async fn nvenc_available(state: State<'_, Arc<AppState>>) -> Result<bool, St
 }
 
 #[tauri::command]
+pub async fn hardware_encoding_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<ffmpeg::HardwareEncodingStatus, String> {
+    let state = state.inner().clone();
+    spawn_blocking(move || state.hardware_encoding_status()).await
+}
+
+#[tauri::command]
 pub fn resolved_tool_paths(state: State<'_, Arc<AppState>>) -> (String, String) {
     (state.ffmpeg_bin(), state.ffprobe_bin())
 }
@@ -578,7 +591,7 @@ fn resolve_playback_info(
     let source = Path::new(&recording.path);
     let settings = state.settings.lock().clone();
     let encode_opts =
-        playback_cache::PreviewEncodeOptions::from_settings(&settings, state.nvenc_available());
+        playback_cache::PreviewEncodeOptions::from_settings(&settings, state.preview_video_encoder());
     let encode_ref = if strategy == PlaybackStrategy::Transcode {
         Some(&encode_opts)
     } else {
@@ -1024,7 +1037,10 @@ fn run_trim(
     let start = request.start_ms / 1000.0;
     let end = request.end_ms / 1000.0;
     let crf = request.crf.unwrap_or(settings.compress_crf);
-    let use_nvenc = request.use_nvenc.unwrap_or(settings.prefer_nvenc);
+    let prefer_hw = request
+        .prefer_hardware_encoding
+        .unwrap_or(settings.prefer_hardware_encoding);
+    let encoder = ffmpeg::resolve_video_encoder(&settings.ffmpeg_path, prefer_hw);
 
     let temp = ffmpeg::sibling_output_with_ext(input, "tmp_edit", "mp4");
     ffmpeg::trim(
@@ -1035,7 +1051,7 @@ fn run_trim(
         end,
         &request.trim_mode,
         crf,
-        use_nvenc,
+        encoder,
         child_slot,
         on_progress,
     )?;
@@ -1053,7 +1069,10 @@ fn run_compress(
 ) -> Result<PathBuf, String> {
     let input = Path::new(&recording.path);
     let crf = request.crf.unwrap_or(settings.compress_crf);
-    let use_nvenc = request.use_nvenc.unwrap_or(settings.prefer_nvenc);
+    let prefer_hw = request
+        .prefer_hardware_encoding
+        .unwrap_or(settings.prefer_hardware_encoding);
+    let encoder = ffmpeg::resolve_video_encoder(&settings.ffmpeg_path, prefer_hw);
     let fps = request.fps.unwrap_or(60);
     let duration_secs = recording
         .duration_ms
@@ -1066,7 +1085,7 @@ fn run_compress(
         input,
         &temp,
         crf,
-        use_nvenc,
+        encoder,
         fps,
         duration_secs,
         child_slot,

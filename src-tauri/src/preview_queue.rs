@@ -437,7 +437,7 @@ impl PreviewQueue {
         let cache_dir = state.paths.playback_cache_dir();
         let source = Path::new(&recording.path);
         let settings = state.settings.lock().clone();
-        let encode_opts = PreviewEncodeOptions::from_settings(&settings, state.nvenc_available());
+        let encode_opts = PreviewEncodeOptions::from_settings(&settings, state.preview_video_encoder());
         let encode_ref = if strategy == PlaybackStrategy::Transcode {
             Some(&encode_opts)
         } else {
@@ -684,7 +684,7 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
             let ffmpeg = state.ffmpeg_bin();
             let settings = state.settings.lock().clone();
             let encode_opts =
-                PreviewEncodeOptions::from_settings(&settings, state.nvenc_available());
+                PreviewEncodeOptions::from_settings(&settings, state.preview_video_encoder());
             let cleanup_policy = CleanupPolicy::from_settings(&settings);
             let cache_dir = paths.playback_cache_dir();
             let output = cache_file_path(&cache_dir, &work.recording_id);

@@ -282,6 +282,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 - `nasm` — required. `scripts/build-ffmpeg.sh` exits with an error if it is missing.
 - `x264` / `libx264-dev` — required for `--enable-libx264` in the bundled FFmpeg build.
+- `libva-dev` (Ubuntu) / `libva` (Arch) — required for `--enable-vaapi` in the bundled FFmpeg build.
+- **nv-codec-headers** — fetched automatically into `.cache/ffmpeg/nv-codec-headers` during `prepare:ffmpeg` (needed for `--enable-nvenc`).
 - `libappindicator-gtk3` / `libayatana-appindicator3-dev` — recommended for system tray icons on GNOME and other desktops that need AppIndicator; optional on KDE Plasma (StatusNotifier).
 - **WebKitGTK / related** — required by Tauri on Linux (exact package names may vary by release).
 - **GStreamer + plugins / `gst-libav` / `gstreamer1.0-libav`** — required for AppImage builds so WebKit can play video in the editor. `build-appimage.sh` stages a curated subset under `src-tauri/.appimage-gst/` and sets `GSTREAMER_PLUGINS_DIR` so linuxdeploy only bundles those plugins. `gstreamer1.0-tools` (`gst-inspect-1.0`) is needed at bundle time.
@@ -323,6 +325,21 @@ Install the equivalents of the packages above, or run `./scripts/check-build-dep
 
 You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or packaging. Empty paths in Settings use the bundled tools.
 
+### Hardware encoding in the AppImage
+
+The bundled FFmpeg includes **h264_nvenc** and **h264_vaapi** when built with `npm run prepare:ffmpeg`. GPU drivers and libraries remain on the **host**:
+
+- **NVENC (NVIDIA):** proprietary driver with `libnvidia-encode.so.1` (`nvidia-smi` should work).
+- **VAAPI (Intel / AMD):** `libva`, Mesa or vendor drivers, and `/dev/dri/renderD*`.
+
+Settings shows compiled vs runtime status for each backend. Preview prefers hardware automatically (NVENC, then VAAPI, then libx264). Edit jobs follow **Prefer hardware encoding when available**.
+
+| Symptom | Likely cause |
+| --- | --- |
+| NVENC compiled but driver unavailable | Install/update the NVIDIA driver; verify `libnvidia-encode.so.1` |
+| VAAPI compiled but device unavailable | Install `libva` / Mesa; run `vainfo`; check `/dev/dri/renderD128` |
+| Falls back to software only | Expected without a working GPU stack; libx264 always available |
+
 ## Individual commands
 
 
@@ -356,6 +373,9 @@ The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg wit
 | Tray icon missing on GNOME                               | Install AppIndicator/StatusNotifier support for your DE                                                                                                                                                                                                                                                                                                |
 | `nasm is required to build bundled FFmpeg`               | Install `nasm`                                                                                                                                                                                                                                                                                                                                         |
 | `libx264 not found`                                      | Install `x264` (and headers / pkg-config file)                                                                                                                                                                                                                                                                                                         |
+| `libva not found` / FFmpeg configure fails on VAAPI      | Install `libva-dev` (Ubuntu) or `libva` (Arch)                                                                                                                                                                                                                                                                                                       |
+| `bundled FFmpeg missing h264_nvenc` / `h264_vaapi`       | Re-run `npm run prepare:ffmpeg` after installing build deps; clear stale cache under `.cache/ffmpeg/` if needed                                                                                                                                                                                                                                      |
+| `ffnvcodec` / NVENC configure error in container build    | Stale `.cache/ffmpeg/nv-codec-headers-prefix` from a host-path build; re-run `npm run prepare:ffmpeg` (script reinstalls when pkg-config prefix mismatches) or remove `.cache/ffmpeg/nv-codec-headers-prefix/`                                                                                                                                     |
 | Slow first build                                         | Normal: compiling FFmpeg from source can take several minutes                                                                                                                                                                                                                                                                                          |
 | `GStreamer element appsink/autoaudiosink not found` in dev | WebKitGTK needs host GStreamer plugins for editor video preview. Run `./scripts/check-build-deps.sh --dev` — it fails early with install hints. On Arch: `gst-plugins-base` + `gst-plugins-good` (+ `gst-plugins-bad`, `gst-libav` recommended). Verify: `gst-inspect-1.0 appsink autoaudiosink`. |
 | `WebKitWebProcess` + `GLib-GObject-CRITICAL` after opening editor | Often follows missing GStreamer elements above. Fix plugins first; if it persists, try `GDK_BACKEND=x11 npm run tauri:dev`. |

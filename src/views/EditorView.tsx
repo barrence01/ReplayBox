@@ -43,7 +43,7 @@ interface PendingConflict {
 interface Props {
   recording: Recording;
   folderRecordings: Recording[];
-  preferNvenc: boolean;
+  preferHardwareEncoding: boolean;
   editJobs: JobStatus[];
   onBack: () => void;
   onOpen: (recording: Recording) => void;
@@ -55,7 +55,7 @@ interface Props {
 export function EditorView({
   recording,
   folderRecordings,
-  preferNvenc,
+  preferHardwareEncoding,
   editJobs,
   onBack,
   onOpen,
@@ -280,7 +280,7 @@ export function EditorView({
         copyCollision: copyCollision ?? null,
         trimMode,
         crf,
-        useNvenc: preferNvenc,
+        preferHardwareEncoding: preferHardwareEncoding,
       });
       onJobStarted(status);
     } catch (e) {
@@ -298,7 +298,7 @@ export function EditorView({
       const status = await startCompress({
         recordingId: recording.id,
         crf,
-        useNvenc: preferNvenc,
+        preferHardwareEncoding: preferHardwareEncoding,
         fps,
         outputMode,
         copyCollision: copyCollision ?? null,

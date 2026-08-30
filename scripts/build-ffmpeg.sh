@@ -32,12 +32,79 @@ CONFIGURE_FLAGS=(
   --disable-doc
   --enable-gpl
   --enable-libx264
+  --enable-nvenc
+  --enable-vaapi
   --enable-static
   --disable-shared
   --disable-ffplay
   --enable-ffmpeg
   --enable-ffprobe
 )
+
+NV_CODEC_HEADERS_TAG="${NV_CODEC_HEADERS_TAG:-n12.1.14.0}"
+NV_CODEC_HEADERS_DIR="${CACHE_ROOT}/nv-codec-headers"
+NV_CODEC_HEADERS_PREFIX="${CACHE_ROOT}/nv-codec-headers-prefix"
+
+ensure_nv_codec_headers() {
+  local pc_file="${NV_CODEC_HEADERS_PREFIX}/lib/pkgconfig/ffnvcodec.pc"
+  local header_file="${NV_CODEC_HEADERS_PREFIX}/include/ffnvcodec/nvEncodeAPI.h"
+  if [[ -f "${pc_file}" && -f "${header_file}" ]]; then
+    local pc_prefix=""
+    pc_prefix="$(grep '^prefix=' "${pc_file}" | cut -d= -f2- || true)"
+    if [[ "${pc_prefix}" == "${NV_CODEC_HEADERS_PREFIX}" ]]; then
+      return 0
+    fi
+    echo "Reinstalling nv-codec-headers (pkg-config prefix mismatch)" >&2
+  fi
+
+  if [[ ! -d "${NV_CODEC_HEADERS_DIR}/.git" ]]; then
+    echo "Cloning nv-codec-headers…"
+    rm -rf "${NV_CODEC_HEADERS_DIR}"
+    git clone --depth 1 --branch "${NV_CODEC_HEADERS_TAG}" \
+      https://github.com/FFmpeg/nv-codec-headers.git "${NV_CODEC_HEADERS_DIR}"
+  else
+    git -C "${NV_CODEC_HEADERS_DIR}" fetch --tags --force origin "${NV_CODEC_HEADERS_TAG}" 2>/dev/null \
+      || git -C "${NV_CODEC_HEADERS_DIR}" fetch --tags --force origin \
+        "refs/tags/${NV_CODEC_HEADERS_TAG}:refs/tags/${NV_CODEC_HEADERS_TAG}"
+    git -C "${NV_CODEC_HEADERS_DIR}" checkout -f "tags/${NV_CODEC_HEADERS_TAG}" 2>/dev/null \
+      || git -C "${NV_CODEC_HEADERS_DIR}" checkout -f "${NV_CODEC_HEADERS_TAG}"
+  fi
+  rm -rf "${NV_CODEC_HEADERS_PREFIX}"
+  make -C "${NV_CODEC_HEADERS_DIR}" clean >/dev/null 2>&1 || true
+  make -C "${NV_CODEC_HEADERS_DIR}" install PREFIX="${NV_CODEC_HEADERS_PREFIX}"
+
+  if [[ ! -f "${pc_file}" ]]; then
+    echo "error: nv-codec-headers install did not produce ${pc_file}" >&2
+    exit 1
+  fi
+}
+
+verify_ffnvcodec_pkg_config() {
+  export PKG_CONFIG_PATH="${NV_CODEC_HEADERS_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+  if ! pkg-config --exists "ffnvcodec >= 12.1.14.0"; then
+    echo "error: pkg-config cannot find ffnvcodec (PKG_CONFIG_PATH=${PKG_CONFIG_PATH})" >&2
+    pkg-config --print-errors --exists "ffnvcodec >= 12.1.14.0" 2>&1 || true
+    exit 1
+  fi
+}
+
+assert_hardware_encoders() {
+  local ffmpeg_bin="$1"
+  local encoders
+  encoders="$("${ffmpeg_bin}" -hide_banner -encoders 2>&1)" || {
+    echo "error: failed to list encoders from ${ffmpeg_bin}" >&2
+    exit 1
+  }
+  if ! grep -q 'h264_nvenc' <<<"${encoders}"; then
+    echo "error: bundled FFmpeg missing h264_nvenc encoder" >&2
+    exit 1
+  fi
+  if ! grep -q 'h264_vaapi' <<<"${encoders}"; then
+    echo "error: bundled FFmpeg missing h264_vaapi encoder" >&2
+    exit 1
+  fi
+  echo "Hardware encoders verified: h264_nvenc, h264_vaapi"
+}
 
 mkdir -p "${CACHE_ROOT}" "${STAGING_DIR}"
 
@@ -60,6 +127,7 @@ if [[ -x "${KEY_DIR}/ffmpeg" && -x "${KEY_DIR}/ffprobe" ]]; then
   if "${KEY_DIR}/ffmpeg" -version >/dev/null 2>&1 \
     && "${KEY_DIR}/ffprobe" -version >/dev/null 2>&1; then
     echo "FFmpeg cache hit (${FFMPEG_TAG}-${ARCH}-${FINGERPRINT})"
+    assert_hardware_encoders "${KEY_DIR}/ffmpeg"
     copy_to_staging "${KEY_DIR}/ffmpeg" "${KEY_DIR}/ffprobe"
     exit 0
   fi
@@ -111,6 +179,10 @@ fi
 rm -rf "${PREFIX_DIR}"
 mkdir -p "${PREFIX_DIR}" "${KEY_DIR}"
 
+ensure_nv_codec_headers
+verify_ffnvcodec_pkg_config
+export PKG_CONFIG_PATH="${NV_CODEC_HEADERS_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+
 pushd "${SRC_DIR}" >/dev/null
 # Clean previous configure artifacts when switching tags.
 make distclean >/dev/null 2>&1 || true
@@ -131,6 +203,8 @@ fi
 cp -f "${PREFIX_DIR}/bin/ffmpeg" "${KEY_DIR}/ffmpeg"
 cp -f "${PREFIX_DIR}/bin/ffprobe" "${KEY_DIR}/ffprobe"
 chmod +x "${KEY_DIR}/ffmpeg" "${KEY_DIR}/ffprobe"
+
+assert_hardware_encoders "${KEY_DIR}/ffmpeg"
 
 copy_to_staging "${KEY_DIR}/ffmpeg" "${KEY_DIR}/ffprobe"
 echo "Cached at ${KEY_DIR}"
