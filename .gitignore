@@ -9,6 +9,7 @@ lerna-debug.log*
 
 # Dependencies / build
 node_modules
+.npm/
 dist
 dist-ssr
 /build/
@@ -33,6 +34,10 @@ src-tauri/gen/schemas
 # Bundled FFmpeg build cache, AppImage tooling binaries, and staged binaries
 # .cache/ffmpeg/          — FFmpeg source + compiled toolchain
 # .cache/appimage/        — type2 runtime + extracted appimagetool
+# .cache/cargo-home/      — Rust crates (container build)
+# .cache/cargo-target/    — Rust target dir (container build)
+# .cache/container-xdg/   — Tauri/linuxdeploy cache (container build)
+# .cache/npm/             — npm cache (container build)
 .cache/
 src-tauri/resources/ffmpeg/ffmpeg
 src-tauri/resources/ffmpeg/ffprobe

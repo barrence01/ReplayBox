@@ -40,6 +40,20 @@ need_cmd() {
   fi
 }
 
+need_node_min() {
+  local min_major="${1:-20}"
+  if ! command -v node >/dev/null 2>&1; then
+    record_missing "command: node"
+    return 1
+  fi
+  local major
+  major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)"
+  if [[ "${major}" -lt "${min_major}" ]]; then
+    record_missing "Node.js >= ${min_major} (found $(node --version 2>/dev/null || echo unknown))"
+    return 1
+  fi
+}
+
 need_pkgconfig() {
   local pkg="$1"
   local label="$2"
@@ -86,11 +100,34 @@ GST_REQUIRED_PLUGINS=(
   libgstaudioconvert.so
   libgstaudioresample.so
   libgstaudioparsers.so
-  libgstvideoconvertscale.so
   libgstautodetect.so
   libgstvolume.so
   libgstapp.so
 )
+
+# Ubuntu 22.04 ships libgstvideoconvert.so + libgstvideoscale.so; Arch merges them.
+gst_video_convert_scale_plugins() {
+  local plugin_dir="$1"
+  if [[ -f "${plugin_dir}/libgstvideoconvertscale.so" ]]; then
+    printf '%s\n' libgstvideoconvertscale.so
+  elif [[ -f "${plugin_dir}/libgstvideoconvert.so" && -f "${plugin_dir}/libgstvideoscale.so" ]]; then
+    printf '%s\n' libgstvideoconvert.so libgstvideoscale.so
+  else
+    printf '%s\n' libgstvideoconvertscale.so
+  fi
+}
+
+need_gst_video_convert_scale() {
+  local plugin_dir="$1"
+  local plugin missing=0
+  while IFS= read -r plugin; do
+    if [[ ! -f "${plugin_dir}/${plugin}" ]]; then
+      record_missing "GStreamer plugin: ${plugin} (under ${plugin_dir})"
+      missing=1
+    fi
+  done < <(gst_video_convert_scale_plugins "${plugin_dir}")
+  return "${missing}"
+}
 
 need_libfuse2() {
   if ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
@@ -136,6 +173,7 @@ check_gstreamer_runtime() {
       record_missing "GStreamer plugin: ${plugin} (under ${plugin_dir})"
     fi
   done
+  need_gst_video_convert_scale "${plugin_dir}" || true
 
   REPLAYBOX_GST_PLUGIN_DIR="${plugin_dir}"
   export REPLAYBOX_GST_PLUGIN_DIR
@@ -170,7 +208,7 @@ check_ffmpeg_profile() {
 }
 
 check_full_profile() {
-  need_cmd node || true
+  need_node_min 20 || true
   need_cmd npm || true
   need_cmd cargo || true
   need_cmd rustc || true
@@ -206,6 +244,7 @@ check_appimage_profile() {
   need_cmd rsvg-convert || true
   need_cmd gst-inspect-1.0 || true
   need_cmd patchelf || true
+  need_cmd xdg-open || true
   need_libfuse2 || true
   check_gstreamer_runtime || true
 }
@@ -274,8 +313,7 @@ sudo apt update && sudo apt install -y \
   wget \
   curl \
   file \
-  nodejs \
-  npm
+  xdg-utils
 ```
 
 On Ubuntu 24.04+, `libfuse2` may pull in `libfuse2t64`. linuxdeploy is itself an AppImage and needs `libfuse.so.2` (or `APPIMAGE_EXTRACT_AND_RUN=1`, which `build-appimage.sh` sets).
@@ -284,6 +322,14 @@ Rust on Ubuntu (install rustup, then reopen the shell or run `source "$HOME/.car
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Node.js **20+** is required (Tauri 2 / Vite 7). Ubuntu apt may ship Node 12 — use NodeSource or nvm:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+node --version   # should be v20.x or newer
 ```
 
 EOF
