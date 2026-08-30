@@ -22,7 +22,7 @@ ReplayBox helps you turn long game recordings into shareable clips. Browse your 
 
 - **Game folders** — browse recordings by game under your watch directory
 - **Last 24 hours** — review recent captures
-- **Time-based trim** — precise (VFR-safe re-encode) or fast (stream copy; may cut on keyframe)
+- **Instant trim** — stream copy via FFmpeg; may snap to keyframes at cut points
 - **Compress** — smaller files for uploads
 
 

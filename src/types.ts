@@ -40,7 +40,6 @@ export interface TrimRequest {
   recordingId: string;
   startMs: number;
   endMs: number;
-  mode: "precise" | "fast";
   outputMode: "copy" | "replace";
   copyCollision?: "overwrite" | "unique" | null;
 }

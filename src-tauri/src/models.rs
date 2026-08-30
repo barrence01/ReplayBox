@@ -30,8 +30,6 @@ pub struct TrimRequest {
     /// Trim start in milliseconds (timeline uses PTS/time, not frames).
     pub start_ms: f64,
     pub end_ms: f64,
-    /// `precise` re-encodes (VFR-safe); `fast` uses stream copy (may cut on keyframe).
-    pub mode: String,
     /// `copy` writes a new file; `replace` atomically replaces the original.
     pub output_mode: String,
     /// When copy dest exists: `overwrite` or `unique` (numbered sibling).

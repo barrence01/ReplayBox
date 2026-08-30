@@ -769,7 +769,7 @@ pub fn start_trim(
         kind: "trim".into(),
         status: "queued".into(),
         progress: 0.0,
-        message: Some(format!("Trim ({})", request.mode)),
+        message: Some("Trim".into()),
         output_path: Some(dest.to_string_lossy().to_string()),
         source_path: Some(recording.path.clone()),
         source_filename: Some(recording.filename.clone()),
@@ -879,30 +879,15 @@ fn run_trim(
     let end = request.end_ms / 1000.0;
 
     let temp = ffmpeg::sibling_output_with_ext(input, "tmp_edit", "mp4");
-    match request.mode.as_str() {
-        "fast" => {
-            ffmpeg::fast_trim(
-                &settings.ffmpeg_path,
-                input,
-                &temp,
-                start,
-                end,
-                child_slot,
-                on_progress,
-            )?
-        }
-        _ => {
-            ffmpeg::precise_trim(
-                &settings.ffmpeg_path,
-                input,
-                &temp,
-                start,
-                end,
-                child_slot,
-                on_progress,
-            )?
-        }
-    }
+    ffmpeg::trim(
+        &settings.ffmpeg_path,
+        input,
+        &temp,
+        start,
+        end,
+        child_slot,
+        on_progress,
+    )?;
 
     finish_output(input, &temp, &request.output_mode, dest)
 }

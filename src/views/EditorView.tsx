@@ -62,7 +62,6 @@ export function EditorView({
   const [startMs, setStartMs] = useState(0);
   const [endMs, setEndMs] = useState(catalogDurationMs || 1);
   const [currentMs, setCurrentMs] = useState(0);
-  const [mode, setMode] = useState<"precise" | "fast">("precise");
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
   const [crf, setCrf] = useState(26);
   const [fps, setFps] = useState<30 | 60>(60);
@@ -235,7 +234,6 @@ export function EditorView({
         recordingId: recording.id,
         startMs,
         endMs,
-        mode,
         outputMode,
         copyCollision: copyCollision ?? null,
       });
@@ -473,24 +471,11 @@ export function EditorView({
             <p className="hint">
               Timeline uses timestamps (PTS), not frame numbers, safe for VFR.
             </p>
-            <fieldset className="radio-group">
-              <label>
-                <input
-                  type="radio"
-                  checked={mode === "precise"}
-                  onChange={() => setMode("precise")}
-                />
-                Precise trim (re-encode, VFR-safe)
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  checked={mode === "fast"}
-                  onChange={() => setMode("fast")}
-                />
-                Fast trim — may cut on keyframe
-              </label>
-            </fieldset>
+            <p className="hint">
+              Instant trim (stream copy). The start may snap to the nearest
+              keyframe — you might see 1–2 s of black/frozen video at the
+              beginning while audio plays normally.
+            </p>
 
             <h2>Compress</h2>
             <label className="stack-label">

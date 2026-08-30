@@ -158,8 +158,13 @@ pub fn generate_thumbnail(
     Ok(())
 }
 
-/// Precise trim: re-encode to H.264/AAC MP4; preserves VFR (no -r).
-pub fn precise_trim(
+/// Instant trim via stream copy into MP4.
+///
+/// Uses `-ss` before `-i` so FFmpeg seeks to the nearest keyframe at the start
+/// time. With `-c copy` there is no re-encode; the cut may snap to keyframes and
+/// the exported clip can show 1–2 s of black/frozen video at the beginning while
+/// audio plays normally until the next decodable frame.
+pub fn trim(
     ffmpeg: &str,
     input: &Path,
     output: &Path,
@@ -168,76 +173,38 @@ pub fn precise_trim(
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
     on_progress: Option<ProgressFn>,
 ) -> Result<(), String> {
-    let vf = format!("trim=start={start_secs}:end={end_secs},setpts=PTS-STARTPTS");
-    let af = format!("atrim=start={start_secs}:end={end_secs},asetpts=PTS-STARTPTS");
     let duration_secs = (end_secs - start_secs).max(0.001);
+    let args = trim_ffmpeg_args(input, output, start_secs, end_secs)?;
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
     run_ffmpeg(
         ffmpeg,
-        &[
-            "-y",
-            "-i",
-            input.to_str().ok_or("Invalid input")?,
-            "-vf",
-            &vf,
-            "-af",
-            &af,
-            "-c:v",
-            "libx264",
-            "-crf",
-            "18",
-            "-preset",
-            "medium",
-            "-c:a",
-            "aac",
-            "-movflags",
-            "+faststart",
-            "-f",
-            "mp4",
-            output.to_str().ok_or("Invalid output")?,
-        ],
+        &arg_refs,
         child_slot,
         duration_secs,
         on_progress,
     )
 }
 
-/// Fast trim via stream copy into MP4. May cut on keyframes — not frame-accurate.
-pub fn fast_trim(
-    ffmpeg: &str,
-    input: &Path,
-    output: &Path,
-    start_secs: f64,
-    end_secs: f64,
-    child_slot: Option<Arc<Mutex<Option<u32>>>>,
-    on_progress: Option<ProgressFn>,
-) -> Result<(), String> {
+fn trim_ffmpeg_args(input: &Path, output: &Path, start_secs: f64, end_secs: f64) -> Result<Vec<String>, String> {
     let start = format!("{start_secs:.3}");
     let end = format!("{end_secs:.3}");
-    let duration_secs = (end_secs - start_secs).max(0.001);
-
-    run_ffmpeg(
-        ffmpeg,
-        &[
-            "-y",
-            "-ss",
-            &start,
-            "-to",
-            &end,
-            "-i",
-            input.to_str().ok_or("Invalid input")?,
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            "-f",
-            "mp4",
-            output.to_str().ok_or("Invalid output")?,
-        ],
-        child_slot,
-        duration_secs,
-        on_progress,
-    )
+    Ok(vec![
+        "-y".into(),
+        "-ss".into(),
+        start,
+        "-to".into(),
+        end,
+        "-i".into(),
+        input.to_str().ok_or("Invalid input")?.into(),
+        "-c".into(),
+        "copy".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        "-f".into(),
+        "mp4".into(),
+        output.to_str().ok_or("Invalid output")?.into(),
+    ])
 }
 
 /// Re-encode to H.264/AAC in an MP4 container (browser-friendly preview).
@@ -591,6 +558,23 @@ mod tests {
         assert_eq!(parse_progress_out_time_secs("out_time_ms=N/A"), None);
         assert_eq!(parse_progress_out_time_secs("progress=continue"), None);
         assert_eq!(parse_progress_out_time_secs("frame=91"), None);
+    }
+
+    #[test]
+    fn trim_ffmpeg_args_places_ss_and_to_before_input_and_uses_copy() {
+        let input = Path::new("/tmp/video_original.mp4");
+        let output = Path::new("/tmp/clip_cortado.mp4");
+        let args = trim_ffmpeg_args(input, output, 12.0, 45.0).unwrap();
+
+        assert_eq!(args[0], "-y");
+        assert_eq!(args[1], "-ss");
+        assert_eq!(args[2], "12.000");
+        assert_eq!(args[3], "-to");
+        assert_eq!(args[4], "45.000");
+        assert_eq!(args[5], "-i");
+        assert_eq!(args[6], "/tmp/video_original.mp4");
+        assert_eq!(args[7], "-c");
+        assert_eq!(args[8], "copy");
     }
 
     #[test]

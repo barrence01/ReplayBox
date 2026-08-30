@@ -313,7 +313,6 @@ mod tests {
                 recording_id: id.into(),
                 start_ms: 0.0,
                 end_ms: 1000.0,
-                mode: "fast".into(),
                 output_mode: "copy".into(),
                 copy_collision: None,
             },
