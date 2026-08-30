@@ -983,6 +983,63 @@ select {
   flex-shrink: 0;
 }
 
+.editor__action-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.editor__action-split .editor__action--main {
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 1px solid color-mix(in srgb, #041018 18%, transparent);
+}
+
+.editor__action-split .editor__action--menu {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 2rem;
+  padding: 0;
+  justify-content: center;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+}
+
+.editor__trim-menu {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  z-index: 20;
+  min-width: 100%;
+  margin: 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.editor__trim-menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.editor__trim-menu-item:hover,
+.editor__trim-menu-item--active .editor__trim-menu-item {
+  background: var(--bg-soft);
+}
+
 .editor__output {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(7rem, 9rem);

@@ -39,12 +39,18 @@ export interface Settings {
   previewScale: number;
 }
 
+export type TrimMode = "fast" | "precise";
+
 export interface TrimRequest {
   recordingId: string;
   startMs: number;
   endMs: number;
   outputMode: "copy" | "replace";
   copyCollision?: "overwrite" | "unique" | null;
+  trimMode?: TrimMode;
+  crf?: number;
+  useNvenc?: boolean;
+  fps?: number;
 }
 
 export interface CompressRequest {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLatestRef } from "../hooks/useRequestGeneration";
 import { openPath } from "@tauri-apps/plugin-opener";
-import type { JobStatus, Recording } from "../types";
+import type { JobStatus, Recording, TrimMode } from "../types";
 import {
   deleteRecording,
   formatBytes,
@@ -21,7 +21,15 @@ import { ConflictModal } from "../components/ConflictModal";
 import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
 import { FolderRecordingList } from "../components/FolderRecordingList";
 import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
-import { CompressIcon, FolderIcon, PauseIcon, PlayIcon, ScissorsIcon } from "../components/icons";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CompressIcon,
+  FolderIcon,
+  PauseIcon,
+  PlayIcon,
+  ScissorsIcon,
+} from "../components/icons";
 import { clampPlayheadMs } from "../lib/timelinePosition";
 import { SEEK_TOLERANCE_SEC } from "../lib/videoSeek";
 
@@ -67,6 +75,9 @@ export function EditorView({
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
   const [crf, setCrf] = useState(26);
   const [fps, setFps] = useState<30 | 60>(60);
+  const [trimMode, setTrimMode] = useState<TrimMode>("fast");
+  const [trimMenuOpen, setTrimMenuOpen] = useState(false);
+  const trimSplitRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -110,6 +121,31 @@ export function EditorView({
     return () => window.clearInterval(id);
   }, [editBusy]);
 
+  useEffect(() => {
+    if (!trimMenuOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (!trimSplitRef.current?.contains(e.target as Node)) {
+        setTrimMenuOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setTrimMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [trimMenuOpen]);
+
+  const trimLabel = trimMode === "fast" ? "Fast trim" : "Precise trim";
+  const trimModeTips: Record<TrimMode, string> = {
+    fast: "Cuts quickly without re-encoding. Fast, but the start may be a little off or show a brief frozen image.",
+    precise:
+      "Re-encodes so the cut matches the timeline. Slower, and uses your Output quality and FPS settings.",
+  };
+
   const rootRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -123,6 +159,7 @@ export function EditorView({
     setConfirmDelete(false);
     setDeleting(false);
     setPlaying(false);
+    setTrimMenuOpen(false);
     setTimelineLocked(false);
     setDraftStartMs(null);
     setDraftEndMs(null);
@@ -241,6 +278,10 @@ export function EditorView({
         endMs,
         outputMode,
         copyCollision: copyCollision ?? null,
+        trimMode,
+        crf,
+        useNvenc: preferNvenc,
+        fps,
       });
       onJobStarted(status);
     } catch (e) {
@@ -423,15 +464,77 @@ export function EditorView({
           />
 
           <div className="editor__actions">
-            <button
-              type="button"
-              className="editor__action"
-              onClick={runTrim}
-              disabled={editBusy}
-            >
-              <ScissorsIcon />
-              <span>{editBusy ? "Working…" : "Trim"}</span>
-            </button>
+            <div className="editor__action-split" ref={trimSplitRef}>
+              <button
+                type="button"
+                className="editor__action editor__action--main"
+                title={editBusy ? undefined : trimModeTips[trimMode]}
+                onClick={() => void runTrim()}
+                disabled={editBusy}
+              >
+                <ScissorsIcon />
+                <span>{editBusy ? "Working…" : trimLabel}</span>
+              </button>
+              <button
+                type="button"
+                className="editor__action editor__action--menu"
+                aria-label="Trim mode"
+                aria-expanded={trimMenuOpen}
+                aria-haspopup="listbox"
+                onClick={() => setTrimMenuOpen((open) => !open)}
+                disabled={editBusy}
+              >
+                {trimMenuOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
+              </button>
+              {trimMenuOpen && (
+                <ul
+                  className="editor__trim-menu"
+                  role="listbox"
+                  aria-label="Trim mode"
+                >
+                  <li
+                    role="option"
+                    aria-selected={trimMode === "fast"}
+                    className={
+                      trimMode === "fast" ? "editor__trim-menu-item--active" : ""
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="editor__trim-menu-item"
+                      title={trimModeTips.fast}
+                      onClick={() => {
+                        setTrimMode("fast");
+                        setTrimMenuOpen(false);
+                      }}
+                    >
+                      Fast trim
+                    </button>
+                  </li>
+                  <li
+                    role="option"
+                    aria-selected={trimMode === "precise"}
+                    className={
+                      trimMode === "precise"
+                        ? "editor__trim-menu-item--active"
+                        : ""
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="editor__trim-menu-item"
+                      title={trimModeTips.precise}
+                      onClick={() => {
+                        setTrimMode("precise");
+                        setTrimMenuOpen(false);
+                      }}
+                    >
+                      Precise trim
+                    </button>
+                  </li>
+                </ul>
+              )}
+            </div>
             <button
               type="button"
               className="editor__action editor__action--secondary"
@@ -479,16 +582,6 @@ export function EditorView({
           </div>
 
           <div className="editor__job-options">
-            <h2>Trim</h2>
-            <p className="hint">
-              Timeline uses timestamps (PTS), not frame numbers, safe for VFR.
-            </p>
-            <p className="hint">
-              Instant trim (stream copy). The start may snap to the nearest
-              keyframe — you might see 1–2 s of black/frozen video at the
-              beginning while audio plays normally.
-            </p>
-
             <h2>Compress</h2>
             <label className="stack-label">
               CRF / quality ({crf})

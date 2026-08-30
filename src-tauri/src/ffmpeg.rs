@@ -171,11 +171,20 @@ pub fn trim(
     output: &Path,
     start_secs: f64,
     end_secs: f64,
+    trim_mode: &str,
+    crf: u8,
+    use_nvenc: bool,
+    fps: u8,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
     on_progress: Option<ProgressFn>,
 ) -> Result<(), String> {
     let duration_secs = (end_secs - start_secs).max(0.001);
-    let args = trim_ffmpeg_args(input, output, start_secs, end_secs)?;
+    let args = if trim_mode == "precise" {
+        let nvenc = use_nvenc && encoder_available(ffmpeg, "h264_nvenc");
+        trim_precise_ffmpeg_args(input, output, start_secs, end_secs, crf, nvenc, fps)?
+    } else {
+        trim_ffmpeg_args(input, output, start_secs, end_secs)?
+    };
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
     run_ffmpeg(
@@ -206,6 +215,71 @@ fn trim_ffmpeg_args(input: &Path, output: &Path, start_secs: f64, end_secs: f64)
         "mp4".into(),
         output.to_str().ok_or("Invalid output")?.into(),
     ])
+}
+
+fn trim_precise_ffmpeg_args(
+    input: &Path,
+    output: &Path,
+    start_secs: f64,
+    end_secs: f64,
+    crf: u8,
+    use_nvenc: bool,
+    fps: u8,
+) -> Result<Vec<String>, String> {
+    let start = format!("{start_secs:.3}");
+    let end = format!("{end_secs:.3}");
+    let crf_s = crf.to_string();
+    let fps_s = fps.to_string();
+    let mut args = vec![
+        "-y".into(),
+        "-i".into(),
+        input.to_str().ok_or("Invalid input")?.into(),
+        "-ss".into(),
+        start,
+        "-to".into(),
+        end,
+    ];
+
+    if use_nvenc {
+        args.extend([
+            "-c:v".into(),
+            "h264_nvenc".into(),
+            "-cq".into(),
+            crf_s,
+            "-preset".into(),
+            "p4".into(),
+            "-r".into(),
+            fps_s,
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "128k".into(),
+        ]);
+    } else {
+        args.extend([
+            "-c:v".into(),
+            "libx264".into(),
+            "-crf".into(),
+            crf_s,
+            "-preset".into(),
+            "medium".into(),
+            "-r".into(),
+            fps_s,
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "128k".into(),
+        ]);
+    }
+
+    args.extend([
+        "-movflags".into(),
+        "+faststart".into(),
+        "-f".into(),
+        "mp4".into(),
+        output.to_str().ok_or("Invalid output")?.into(),
+    ]);
+    Ok(args)
 }
 
 /// Re-encode to H.264/AAC in an MP4 container (browser-friendly preview).
@@ -633,6 +707,31 @@ mod tests {
         assert_eq!(args[6], "/tmp/video_original.mp4");
         assert_eq!(args[7], "-c");
         assert_eq!(args[8], "copy");
+    }
+
+    #[test]
+    fn trim_precise_ffmpeg_args_seeks_after_input_and_encodes() {
+        let input = Path::new("/tmp/video_original.mp4");
+        let output = Path::new("/tmp/clip_precise.mp4");
+        let args =
+            trim_precise_ffmpeg_args(input, output, 12.0, 45.0, 26, false, 60).unwrap();
+
+        assert_eq!(args[0], "-y");
+        assert_eq!(args[1], "-i");
+        assert_eq!(args[2], "/tmp/video_original.mp4");
+        assert_eq!(args[3], "-ss");
+        assert_eq!(args[4], "12.000");
+        assert_eq!(args[5], "-to");
+        assert_eq!(args[6], "45.000");
+        assert!(args.contains(&"-c:v".to_string()));
+        assert!(args.contains(&"libx264".to_string()));
+        assert!(args.contains(&"-r".to_string()));
+        assert!(args.contains(&"60".to_string()));
+        assert!(
+            !args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == "copy")
+        );
     }
 
     #[test]

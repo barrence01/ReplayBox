@@ -978,6 +978,9 @@ fn run_trim(
     let input = Path::new(&recording.path);
     let start = request.start_ms / 1000.0;
     let end = request.end_ms / 1000.0;
+    let crf = request.crf.unwrap_or(settings.compress_crf);
+    let use_nvenc = request.use_nvenc.unwrap_or(settings.prefer_nvenc);
+    let fps = request.fps.unwrap_or(60);
 
     let temp = ffmpeg::sibling_output_with_ext(input, "tmp_edit", "mp4");
     ffmpeg::trim(
@@ -986,6 +989,10 @@ fn run_trim(
         &temp,
         start,
         end,
+        &request.trim_mode,
+        crf,
+        use_nvenc,
+        fps,
         child_slot,
         on_progress,
     )?;

@@ -323,6 +323,10 @@ mod tests {
                 end_ms: 1000.0,
                 output_mode: "copy".into(),
                 copy_collision: None,
+                trim_mode: "fast".into(),
+                crf: None,
+                use_nvenc: None,
+                fps: None,
             },
             dest: PathBuf::from("/tmp/out.mp4"),
         }
