@@ -457,7 +457,7 @@ function App() {
           <EditorView
             recording={selected}
             folderRecordings={folderRecordings}
-            preferNvenc={settings?.preferNvenc ?? true}
+            preferHardwareEncoding={settings?.preferHardwareEncoding ?? true}
             editJobs={editJobs}
             onJobStarted={(job) => {
               setEditJobs((prev) => mergeJob(prev, job));

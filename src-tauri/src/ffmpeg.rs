@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -7,6 +7,37 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoEncoder {
+    Software,
+    Nvenc,
+    Vaapi,
+}
+
+impl VideoEncoder {
+    pub fn profile_suffix(self) -> &'static str {
+        match self {
+            VideoEncoder::Nvenc => "nvenc",
+            VideoEncoder::Vaapi => "vaapi",
+            VideoEncoder::Software => "x264",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HardwareEncodingStatus {
+    pub active: VideoEncoder,
+    pub nvenc_compiled: bool,
+    pub nvenc_runtime: bool,
+    pub vaapi_compiled: bool,
+    pub vaapi_runtime: bool,
+    pub vaapi_device: Option<String>,
+}
+
+const ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub struct ProbeInfo {
@@ -173,14 +204,13 @@ pub fn trim(
     end_secs: f64,
     trim_mode: &str,
     crf: u8,
-    use_nvenc: bool,
+    encoder: VideoEncoder,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
     on_progress: Option<ProgressFn>,
 ) -> Result<(), String> {
     let duration_secs = (end_secs - start_secs).max(0.001);
     let args = if trim_mode == "precise" {
-        let nvenc = use_nvenc && encoder_available(ffmpeg, "h264_nvenc");
-        trim_precise_ffmpeg_args(input, output, start_secs, end_secs, crf, nvenc)?
+        trim_precise_ffmpeg_args(input, output, start_secs, end_secs, crf, encoder)?
     } else {
         trim_ffmpeg_args(input, output, start_secs, end_secs)?
     };
@@ -222,13 +252,24 @@ fn trim_precise_ffmpeg_args(
     start_secs: f64,
     end_secs: f64,
     crf: u8,
-    use_nvenc: bool,
+    encoder: VideoEncoder,
 ) -> Result<Vec<String>, String> {
     let start = format!("{start_secs:.3}");
     let end = format!("{end_secs:.3}");
     let crf_s = crf.to_string();
-    let mut args = vec![
-        "-y".into(),
+    let mut args = vec!["-y".into()];
+
+    if encoder == VideoEncoder::Vaapi {
+        if let Some(device) = vaapi_render_device() {
+            let device_s = device.to_string_lossy();
+            args.extend([
+                "-init_hw_device".into(),
+                format!("vaapi=va:{device_s}"),
+            ]);
+        }
+    }
+
+    args.extend([
         "-i".into(),
         input.to_str().ok_or("Invalid input")?.into(),
         "-ss".into(),
@@ -237,37 +278,46 @@ fn trim_precise_ffmpeg_args(
         end,
         "-fps_mode".into(),
         "passthrough".into(),
-    ];
+    ]);
 
-    if use_nvenc {
-        args.extend([
-            "-c:v".into(),
-            "h264_nvenc".into(),
-            "-cq".into(),
-            crf_s,
-            "-preset".into(),
-            "p4".into(),
-            "-c:a".into(),
-            "aac".into(),
-            "-b:a".into(),
-            "128k".into(),
-        ]);
-    } else {
-        args.extend([
-            "-c:v".into(),
-            "libx264".into(),
-            "-crf".into(),
-            crf_s,
-            "-preset".into(),
-            "medium".into(),
-            "-c:a".into(),
-            "aac".into(),
-            "-b:a".into(),
-            "128k".into(),
-        ]);
+    match encoder {
+        VideoEncoder::Nvenc => {
+            args.extend([
+                "-c:v".into(),
+                "h264_nvenc".into(),
+                "-cq".into(),
+                crf_s.clone(),
+                "-preset".into(),
+                "p4".into(),
+            ]);
+        }
+        VideoEncoder::Vaapi => {
+            args.push("-vf".into());
+            args.push("format=nv12,hwupload".into());
+            args.extend([
+                "-c:v".into(),
+                "h264_vaapi".into(),
+                "-qp".into(),
+                crf_s.clone(),
+            ]);
+        }
+        VideoEncoder::Software => {
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-crf".into(),
+                crf_s.clone(),
+                "-preset".into(),
+                "medium".into(),
+            ]);
+        }
     }
 
     args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
         "-movflags".into(),
         "+faststart".into(),
         "-f".into(),
@@ -283,7 +333,7 @@ pub fn compress(
     input: &Path,
     output: &Path,
     crf: u8,
-    use_nvenc: bool,
+    encoder: VideoEncoder,
     fps: u8,
     duration_secs: f64,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
@@ -293,74 +343,228 @@ pub fn compress(
     let fps_s = fps.to_string();
     let out = output.to_str().ok_or("Invalid output")?;
     let inp = input.to_str().ok_or("Invalid input")?;
+    let mut args = vec!["-y".into(), "-i".into(), inp.to_string()];
 
-    if use_nvenc && encoder_available(ffmpeg, "h264_nvenc") {
-        run_ffmpeg(
-            ffmpeg,
-            &[
-                "-y",
-                "-i",
-                inp,
-                "-c:v",
-                "h264_nvenc",
-                "-cq",
-                &crf_s,
-                "-preset",
-                "p4",
-                "-r",
-                &fps_s,
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-movflags",
-                "+faststart",
-                "-f",
-                "mp4",
-                out,
-            ],
-            child_slot,
-            duration_secs,
-            on_progress,
-        )
-    } else {
-        run_ffmpeg(
-            ffmpeg,
-            &[
-                "-y",
-                "-i",
-                inp,
-                "-c:v",
-                "libx264",
-                "-crf",
-                &crf_s,
-                "-preset",
-                "medium",
-                "-r",
-                &fps_s,
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-movflags",
-                "+faststart",
-                "-f",
-                "mp4",
-                out,
-            ],
-            child_slot,
-            duration_secs,
-            on_progress,
-        )
+    if encoder == VideoEncoder::Vaapi {
+        if let Some(device) = vaapi_render_device() {
+            let device_s = device.to_string_lossy();
+            args.extend([
+                "-init_hw_device".into(),
+                format!("vaapi=va:{device_s}"),
+            ]);
+        }
     }
+
+    match encoder {
+        VideoEncoder::Nvenc => {
+            args.extend([
+                "-c:v".into(),
+                "h264_nvenc".into(),
+                "-cq".into(),
+                crf_s,
+                "-preset".into(),
+                "p4".into(),
+            ]);
+        }
+        VideoEncoder::Vaapi => {
+            args.push("-vf".into());
+            args.push("format=nv12,hwupload".into());
+            args.extend([
+                "-c:v".into(),
+                "h264_vaapi".into(),
+                "-qp".into(),
+                crf_s,
+            ]);
+        }
+        VideoEncoder::Software => {
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-crf".into(),
+                crf_s,
+                "-preset".into(),
+                "medium".into(),
+            ]);
+        }
+    }
+
+    args.extend([
+        "-r".into(),
+        fps_s,
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        "-f".into(),
+        "mp4".into(),
+        out.to_string(),
+    ]);
+
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_ffmpeg(
+        ffmpeg,
+        &arg_refs,
+        child_slot,
+        duration_secs,
+        on_progress,
+    )
 }
 
-pub fn encoder_available(ffmpeg: &str, name: &str) -> bool {
+pub fn encoder_listed(ffmpeg: &str, name: &str) -> bool {
     Command::new(ffmpeg)
         .args(["-hide_banner", "-encoders"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains(name))
         .unwrap_or(false)
+}
+
+pub fn vaapi_render_device() -> Option<PathBuf> {
+    let dri = Path::new("/dev/dri");
+    let entries = std::fs::read_dir(dri).ok()?;
+    let mut devices: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("renderD"))
+                .unwrap_or(false)
+        })
+        .collect();
+    devices.sort();
+    devices.into_iter().next()
+}
+
+pub fn resolve_video_encoder(ffmpeg: &str, prefer_hw: bool) -> VideoEncoder {
+    hardware_encoding_status(ffmpeg, prefer_hw).active
+}
+
+pub fn select_video_encoder(
+    prefer_hw: bool,
+    nvenc_runtime: bool,
+    vaapi_runtime: bool,
+) -> VideoEncoder {
+    if !prefer_hw {
+        return VideoEncoder::Software;
+    }
+    if nvenc_runtime {
+        return VideoEncoder::Nvenc;
+    }
+    if vaapi_runtime {
+        return VideoEncoder::Vaapi;
+    }
+    VideoEncoder::Software
+}
+
+pub fn hardware_encoding_status(ffmpeg: &str, prefer_hw: bool) -> HardwareEncodingStatus {
+    let nvenc_compiled = encoder_listed(ffmpeg, "h264_nvenc");
+    let vaapi_compiled = encoder_listed(ffmpeg, "h264_vaapi");
+    let vaapi_device = vaapi_render_device();
+    let vaapi_device_s = vaapi_device
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+
+    let nvenc_runtime =
+        nvenc_compiled && probe_encoder_runtime(ffmpeg, VideoEncoder::Nvenc, vaapi_device.as_deref());
+    let vaapi_runtime = vaapi_compiled
+        && vaapi_device.is_some()
+        && probe_encoder_runtime(ffmpeg, VideoEncoder::Vaapi, vaapi_device.as_deref());
+
+    let active = select_video_encoder(prefer_hw, nvenc_runtime, vaapi_runtime);
+
+    HardwareEncodingStatus {
+        active,
+        nvenc_compiled,
+        nvenc_runtime,
+        vaapi_compiled,
+        vaapi_runtime,
+        vaapi_device: vaapi_device_s,
+    }
+}
+
+pub fn probe_encoder_runtime(
+    ffmpeg: &str,
+    encoder: VideoEncoder,
+    vaapi_device: Option<&Path>,
+) -> bool {
+    if !binary_available(ffmpeg) {
+        return false;
+    }
+    let args: Vec<String> = match encoder {
+        VideoEncoder::Nvenc => vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "nullsrc=s=256x256:d=0.1".into(),
+            "-c:v".into(),
+            "h264_nvenc".into(),
+            "-f".into(),
+            "null".into(),
+            "-".into(),
+        ],
+        VideoEncoder::Vaapi => {
+            let device_path = vaapi_device
+                .map(|p| p.to_path_buf())
+                .or_else(vaapi_render_device);
+            let device = match device_path {
+                Some(d) => d,
+                None => return false,
+            };
+            vec![
+                "-hide_banner".into(),
+                "-loglevel".into(),
+                "error".into(),
+                "-init_hw_device".into(),
+                format!("vaapi=va:{}", device.to_string_lossy()),
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "nullsrc=s=256x256:d=0.1".into(),
+                "-vf".into(),
+                "format=nv12,hwupload".into(),
+                "-c:v".into(),
+                "h264_vaapi".into(),
+                "-f".into(),
+                "null".into(),
+                "-".into(),
+            ]
+        }
+        VideoEncoder::Software => return false,
+    };
+    probe_command_success(ffmpeg, &args, ENCODER_PROBE_TIMEOUT)
+}
+
+fn probe_command_success(ffmpeg: &str, args: &[String], timeout: Duration) -> bool {
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = match Command::new(ffmpeg)
+        .args(&arg_refs)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 /// CFR fps and GOP for scrub-friendly preview (~267ms keyframes @ 30fps).
@@ -369,42 +573,67 @@ const PREVIEW_GOP: &str = "8";
 
 /// Build FFmpeg argument list for preview transcode (video + audio encode).
 /// `scale` is the denominator: 1 = original, 2 = half, 4 = quarter.
-pub fn preview_transcode_args(crf: u8, scale: u8, use_nvenc: bool) -> Vec<String> {
+pub fn preview_transcode_args(crf: u8, scale: u8, encoder: VideoEncoder) -> Vec<String> {
     let mut args = Vec::new();
-    if scale > 1 {
+
+    if encoder == VideoEncoder::Vaapi {
+        if let Some(device) = vaapi_render_device() {
+            let device_s = device.to_string_lossy();
+            args.extend([
+                "-init_hw_device".into(),
+                format!("vaapi=va:{device_s}"),
+            ]);
+        }
+    }
+
+    let vf = preview_video_filter(scale, encoder);
+    if let Some(filter) = vf {
         args.push("-vf".into());
-        args.push(format!(
-            "scale=trunc(iw/{scale})*2:trunc(ih/{scale})*2"
-        ));
+        args.push(filter);
     }
 
     let crf_s = crf.to_string();
-    if use_nvenc {
-        args.extend([
-            "-c:v".into(),
-            "h264_nvenc".into(),
-            "-preset".into(),
-            "p1".into(),
-            "-cq".into(),
-            crf_s,
-            "-g".into(),
-            PREVIEW_GOP.into(),
-            "-keyint_min".into(),
-            PREVIEW_GOP.into(),
-        ]);
-    } else {
-        args.extend([
-            "-c:v".into(),
-            "libx264".into(),
-            "-preset".into(),
-            "ultrafast".into(),
-            "-crf".into(),
-            crf_s,
-            "-g".into(),
-            PREVIEW_GOP.into(),
-            "-keyint_min".into(),
-            PREVIEW_GOP.into(),
-        ]);
+    match encoder {
+        VideoEncoder::Nvenc => {
+            args.extend([
+                "-c:v".into(),
+                "h264_nvenc".into(),
+                "-preset".into(),
+                "p1".into(),
+                "-cq".into(),
+                crf_s,
+                "-g".into(),
+                PREVIEW_GOP.into(),
+                "-keyint_min".into(),
+                PREVIEW_GOP.into(),
+            ]);
+        }
+        VideoEncoder::Vaapi => {
+            args.extend([
+                "-c:v".into(),
+                "h264_vaapi".into(),
+                "-qp".into(),
+                crf_s,
+                "-g".into(),
+                PREVIEW_GOP.into(),
+                "-keyint_min".into(),
+                PREVIEW_GOP.into(),
+            ]);
+        }
+        VideoEncoder::Software => {
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "ultrafast".into(),
+                "-crf".into(),
+                crf_s,
+                "-g".into(),
+                PREVIEW_GOP.into(),
+                "-keyint_min".into(),
+                PREVIEW_GOP.into(),
+            ]);
+        }
     }
 
     args.extend([
@@ -418,6 +647,30 @@ pub fn preview_transcode_args(crf: u8, scale: u8, use_nvenc: bool) -> Vec<String
         "128k".into(),
     ]);
     args
+}
+
+fn preview_video_filter(scale: u8, encoder: VideoEncoder) -> Option<String> {
+    let scale_part = if scale > 1 {
+        format!("scale=trunc(iw/{scale})*2:trunc(ih/{scale})*2")
+    } else {
+        String::new()
+    };
+    match encoder {
+        VideoEncoder::Vaapi => {
+            if scale_part.is_empty() {
+                Some("format=nv12,hwupload".into())
+            } else {
+                Some(format!("{scale_part},format=nv12,hwupload"))
+            }
+        }
+        VideoEncoder::Nvenc | VideoEncoder::Software => {
+            if scale_part.is_empty() {
+                None
+            } else {
+                Some(scale_part)
+            }
+        }
+    }
 }
 
 pub fn binary_available(bin: &str) -> bool {
@@ -708,7 +961,7 @@ mod tests {
     fn trim_precise_ffmpeg_args_seeks_after_input_and_encodes() {
         let input = Path::new("/tmp/video_original.mp4");
         let output = Path::new("/tmp/clip_precise.mp4");
-        let args = trim_precise_ffmpeg_args(input, output, 12.0, 45.0, 26, false).unwrap();
+        let args = trim_precise_ffmpeg_args(input, output, 12.0, 45.0, 26, VideoEncoder::Software).unwrap();
 
         assert_eq!(args[0], "-y");
         assert_eq!(args[1], "-i");
@@ -829,8 +1082,30 @@ mod tests {
     }
 
     #[test]
+    fn select_video_encoder_prefers_nvenc_then_vaapi_then_software() {
+        use super::VideoEncoder;
+
+        assert_eq!(
+            select_video_encoder(true, true, true),
+            VideoEncoder::Nvenc
+        );
+        assert_eq!(
+            select_video_encoder(true, false, true),
+            VideoEncoder::Vaapi
+        );
+        assert_eq!(
+            select_video_encoder(true, false, false),
+            VideoEncoder::Software
+        );
+        assert_eq!(
+            select_video_encoder(false, true, true),
+            VideoEncoder::Software
+        );
+    }
+
+    #[test]
     fn preview_transcode_args_nvenc_includes_half_scale_and_cq() {
-        let args = preview_transcode_args(28, 2, true);
+        let args = preview_transcode_args(28, 2, VideoEncoder::Nvenc);
         assert!(args.contains(&"-vf".to_string()));
         assert!(args
             .iter()
@@ -846,7 +1121,7 @@ mod tests {
 
     #[test]
     fn preview_transcode_args_quarter_scale() {
-        let args = preview_transcode_args(28, 4, false);
+        let args = preview_transcode_args(28, 4, VideoEncoder::Software);
         assert!(args
             .iter()
             .any(|a| a.contains("scale=trunc(iw/4)*2:trunc(ih/4)*2")));
@@ -855,7 +1130,7 @@ mod tests {
 
     #[test]
     fn preview_transcode_args_x264_omits_scale_when_original() {
-        let args = preview_transcode_args(30, 1, false);
+        let args = preview_transcode_args(30, 1, VideoEncoder::Software);
         assert!(!args.contains(&"-vf".to_string()));
         assert!(args.contains(&"libx264".to_string()));
         assert!(args.contains(&"-crf".to_string()));
@@ -863,5 +1138,24 @@ mod tests {
         assert!(args.contains(&"ultrafast".to_string()));
         assert!(args.windows(2).any(|w| w[0] == "-r" && w[1] == "30"));
         assert!(args.windows(2).any(|w| w[0] == "-g" && w[1] == "8"));
+    }
+
+    #[test]
+    fn preview_transcode_args_vaapi_includes_hwupload() {
+        let args = preview_transcode_args(28, 2, VideoEncoder::Vaapi);
+        assert!(args
+            .iter()
+            .any(|a| a.contains("format=nv12,hwupload")));
+        assert!(args.contains(&"h264_vaapi".to_string()));
+        assert!(args.contains(&"-qp".to_string()));
+    }
+
+    #[test]
+    fn trim_precise_ffmpeg_args_vaapi_uses_qp() {
+        let input = Path::new("/tmp/video_original.mp4");
+        let output = Path::new("/tmp/clip_vaapi.mp4");
+        let args = trim_precise_ffmpeg_args(input, output, 1.0, 5.0, 26, VideoEncoder::Vaapi).unwrap();
+        assert!(args.contains(&"h264_vaapi".to_string()));
+        assert!(args.contains(&"-qp".to_string()));
     }
 }

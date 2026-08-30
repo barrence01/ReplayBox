@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CompressRequest,
   CopyPathInfo,
+  HardwareEncodingStatus,
   JobStatus,
   PlaybackInfo,
   Recording,
@@ -102,6 +103,10 @@ export function resolvedToolPaths() {
   return invoke<[string, string]>("resolved_tool_paths");
 }
 
+export function getLogDir() {
+  return invoke<string>("get_log_dir");
+}
+
 export function getPlaybackInfo(
   recordingId: string,
   options?: {
@@ -118,6 +123,10 @@ export function getPlaybackInfo(
 
 export function nvencAvailable() {
   return invoke<boolean>("nvenc_available");
+}
+
+export function hardwareEncodingStatus() {
+  return invoke<HardwareEncodingStatus>("hardware_encoding_status");
 }
 
 export function getJobStatus(jobId: string) {

@@ -1,6 +1,8 @@
 use crate::ffmpeg;
 use crate::logging::{append_ffmpeg_log_bytes, flush_ffmpeg_log};
-use crate::playback::PlaybackStrategy;
+use crate::playback::{
+    self, PlaybackStrategy,
+};
 use crate::process_util::{kill_child, ChildSlot};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -20,27 +22,29 @@ const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub struct PreviewEncodeOptions {
     pub crf: u8,
     pub scale: u8,
-    pub use_nvenc: bool,
+    pub encoder: ffmpeg::VideoEncoder,
     pub profile_key: String,
 }
 
 impl PreviewEncodeOptions {
-    pub fn from_settings(settings: &Settings, use_nvenc: bool) -> Self {
+    pub fn from_settings(settings: &Settings, encoder: ffmpeg::VideoEncoder) -> Self {
         let crf = settings.preview_crf;
         let scale = settings.preview_scale;
-        let profile_key = preview_profile_key(crf, scale, use_nvenc);
+        let profile_key = preview_profile_key(crf, scale, encoder);
         Self {
             crf,
             scale,
-            use_nvenc,
+            encoder,
             profile_key,
         }
     }
 }
 
-pub fn preview_profile_key(crf: u8, scale: u8, use_nvenc: bool) -> String {
-    let encoder = if use_nvenc { "nvenc" } else { "x264" };
-    format!("crf{crf}:s{scale}:30fps:{encoder}")
+pub fn preview_profile_key(crf: u8, scale: u8, encoder: ffmpeg::VideoEncoder) -> String {
+    format!(
+        "crf{crf}:s{scale}:30fps:{}",
+        encoder.profile_suffix()
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +88,38 @@ pub fn cache_temp_path(output: &Path) -> PathBuf {
     parent.join(format!("{stem}.partial.mp4"))
 }
 
+pub fn streamcopy_inplace_temp_path(original: &Path) -> PathBuf {
+    let parent = original.parent().unwrap_or_else(|| Path::new("."));
+    let stem = original
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("recording");
+    parent.join(format!("{stem}.replaybox.tmp.mp4"))
+}
+
+pub fn is_mp4_source(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+}
+
+pub fn is_playback_cache_path(cache_dir: &Path, path: &Path) -> bool {
+    let Ok(cache_root) = cache_dir.canonicalize() else {
+        return false;
+    };
+    let Ok(candidate) = path.canonicalize() else {
+        return false;
+    };
+    candidate.starts_with(&cache_root)
+}
+
+pub fn remove_recording_cache(cache_dir: &Path, recording_id: &str) {
+    let cache_path = cache_file_path(cache_dir, recording_id);
+    let _ = fs::remove_file(&cache_path);
+    let _ = fs::remove_file(cache_temp_path(&cache_path));
+    let _ = fs::remove_file(sidecar_path(cache_dir, recording_id));
+}
+
 fn is_final_cache_mp4(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("mp4")
         && path
@@ -96,27 +132,11 @@ fn sidecar_path(cache_dir: &Path, recording_id: &str) -> PathBuf {
     cache_dir.join(format!("{recording_id}.json"))
 }
 
-fn strategy_sidecar_name(strategy: PlaybackStrategy) -> &'static str {
-    match strategy {
-        PlaybackStrategy::Direct => "direct",
-        PlaybackStrategy::RemuxAudio => "remux",
-        PlaybackStrategy::Transcode => "transcode",
-    }
-}
-
 fn strategy_rank(strategy: PlaybackStrategy) -> u8 {
     match strategy {
         PlaybackStrategy::Direct => 0,
-        PlaybackStrategy::RemuxAudio => 1,
+        PlaybackStrategy::StreamCopy => 1,
         PlaybackStrategy::Transcode => 2,
-    }
-}
-
-fn sidecar_strategy_rank(name: &str) -> u8 {
-    match name {
-        "transcode" => 2,
-        "remux" => 1,
-        _ => 0,
     }
 }
 
@@ -157,7 +177,7 @@ pub fn is_cache_valid(
     if sidecar.source_mtime != mtime || sidecar.source_size != size {
         return None;
     }
-    if sidecar_strategy_rank(&sidecar.strategy) < strategy_rank(required_strategy) {
+    if playback::sidecar_strategy_rank(&sidecar.strategy) < strategy_rank(required_strategy) {
         return None;
     }
 
@@ -185,20 +205,12 @@ fn write_sidecar(
     let sidecar = CacheSidecar {
         source_mtime: mtime,
         source_size: size,
-        strategy: strategy_sidecar_name(strategy).to_string(),
+        strategy: playback::strategy_sidecar_name(strategy).to_string(),
         created_at: Utc::now().to_rfc3339(),
         preview_profile,
     };
     let raw = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
     fs::write(sidecar_path(cache_dir, recording_id), raw).map_err(|e| e.to_string())
-}
-
-pub fn audio_copy_compatible(audio_codec: Option<&str>) -> bool {
-    match audio_codec.map(str::to_ascii_lowercase).as_deref() {
-        Some("aac") | Some("mp3") | Some("mp4a") => true,
-        None => true,
-        _ => false,
-    }
 }
 
 fn spawn_stderr_reader(stderr: std::process::ChildStderr) {
@@ -214,6 +226,12 @@ fn spawn_stderr_reader(stderr: std::process::ChildStderr) {
         }
         flush_ffmpeg_log();
     });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StreamCopyResult {
+    InPlace(PathBuf),
+    Cache(PathBuf),
 }
 
 pub(crate) fn run_ffmpeg_cache_job(
@@ -244,6 +262,78 @@ pub(crate) fn run_ffmpeg_cache_job(
     )
 }
 
+pub(crate) fn run_ffmpeg_streamcopy_job(
+    ffmpeg: &str,
+    input: &Path,
+    audio_codec: Option<&str>,
+    encode_opts: &PreviewEncodeOptions,
+    cancel: &AtomicBool,
+    child_slot: &ChildSlot,
+    cache_dir: &Path,
+    recording_id: &str,
+) -> Result<StreamCopyResult, String> {
+    if is_mp4_source(input) {
+        let tmp = streamcopy_inplace_temp_path(input);
+        if tmp.exists() {
+            let _ = fs::remove_file(&tmp);
+        }
+
+        run_ffmpeg_to_temp(
+            ffmpeg,
+            input,
+            &tmp,
+            PlaybackStrategy::StreamCopy,
+            audio_codec,
+            Some(encode_opts),
+            cancel,
+            child_slot,
+        )?;
+
+        match ffmpeg::atomic_replace(&tmp, input) {
+            Ok(()) => {
+                remove_recording_cache(cache_dir, recording_id);
+                return Ok(StreamCopyResult::InPlace(input.to_path_buf()));
+            }
+            Err(replace_err) => {
+                let cache_output = cache_file_path(cache_dir, recording_id);
+                match promote_temp_to_cache(
+                    &tmp,
+                    &cache_output,
+                    input,
+                    cache_dir,
+                    recording_id,
+                    PlaybackStrategy::StreamCopy,
+                    None,
+                ) {
+                    Ok(()) => return Ok(StreamCopyResult::Cache(cache_output)),
+                    Err(cache_err) => {
+                        let _ = fs::remove_file(&tmp);
+                        return Err(format!(
+                            "in-place replace failed ({replace_err}); cache fallback failed ({cache_err})"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let cache_output = cache_file_path(cache_dir, recording_id);
+    run_ffmpeg_cache(
+        ffmpeg,
+        input,
+        &cache_output,
+        PlaybackStrategy::StreamCopy,
+        audio_codec,
+        encode_opts,
+        cancel,
+        child_slot,
+        cache_dir,
+        recording_id,
+        None,
+    )?;
+    Ok(StreamCopyResult::Cache(cache_output))
+}
+
 pub fn cancel_all_cache_jobs(state: &AppState) {
     let _ = state.preview_queue.cancel_all();
 }
@@ -266,15 +356,73 @@ fn run_ffmpeg_cache(
         let _ = fs::remove_file(&tmp);
     }
 
+    run_ffmpeg_to_temp(
+        ffmpeg,
+        input,
+        &tmp,
+        strategy,
+        audio_codec,
+        Some(encode_opts),
+        cancel,
+        child_slot,
+    )?;
+
+    promote_temp_to_cache(
+        &tmp,
+        output,
+        input,
+        cache_dir,
+        recording_id,
+        strategy,
+        preview_profile,
+    )
+}
+
+fn promote_temp_to_cache(
+    tmp: &Path,
+    output: &Path,
+    input: &Path,
+    cache_dir: &Path,
+    recording_id: &str,
+    strategy: PlaybackStrategy,
+    preview_profile: Option<String>,
+) -> Result<(), String> {
+    let (mtime, size) = source_metadata(input)?;
+    write_sidecar(
+        cache_dir,
+        recording_id,
+        mtime,
+        size,
+        strategy,
+        preview_profile,
+    )?;
+
+    if output.exists() {
+        fs::remove_file(output).map_err(|e| e.to_string())?;
+    }
+    fs::rename(tmp, output).map_err(|e| format!("cache rename failed: {e}"))?;
+    Ok(())
+}
+
+fn run_ffmpeg_to_temp(
+    ffmpeg: &str,
+    input: &Path,
+    tmp: &Path,
+    strategy: PlaybackStrategy,
+    audio_codec: Option<&str>,
+    encode_opts: Option<&PreviewEncodeOptions>,
+    cancel: &AtomicBool,
+    child_slot: &ChildSlot,
+) -> Result<(), String> {
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-nostdin", "-y"]);
     cmd.arg("-i").arg(input);
 
     match strategy {
         PlaybackStrategy::Direct => return Err("direct does not use cache ffmpeg".into()),
-        PlaybackStrategy::RemuxAudio => {
+        PlaybackStrategy::StreamCopy => {
             cmd.args(["-c:v", "copy"]);
-            if audio_copy_compatible(audio_codec) {
+            if playback::is_direct_playback_audio(audio_codec) {
                 cmd.args(["-c:a", "copy"]);
             } else {
                 cmd.args(["-c:a", "aac", "-b:a", "128k"]);
@@ -282,10 +430,11 @@ fn run_ffmpeg_cache(
             cmd.args(["-avoid_negative_ts", "make_zero", "-fflags", "+genpts"]);
         }
         PlaybackStrategy::Transcode => {
+            let encode_opts = encode_opts.ok_or_else(|| "transcode requires encode options".to_string())?;
             for arg in ffmpeg::preview_transcode_args(
                 encode_opts.crf,
                 encode_opts.scale,
-                encode_opts.use_nvenc,
+                encode_opts.encoder,
             ) {
                 cmd.arg(arg);
             }
@@ -314,7 +463,7 @@ fn run_ffmpeg_cache(
     loop {
         if cancel.load(Ordering::Relaxed) {
             kill_child(child_slot);
-            let _ = fs::remove_file(&tmp);
+            let _ = fs::remove_file(tmp);
             return Err("Cache job cancelled".into());
         }
 
@@ -342,31 +491,17 @@ fn run_ffmpeg_cache(
             Ok(true) => break,
             Ok(false) => thread::sleep(Duration::from_millis(200)),
             Err(e) => {
-                let _ = fs::remove_file(&tmp);
+                let _ = fs::remove_file(tmp);
                 return Err(e);
             }
         }
     }
 
     if cancel.load(Ordering::Relaxed) {
-        let _ = fs::remove_file(&tmp);
+        let _ = fs::remove_file(tmp);
         return Err("Cache job cancelled".into());
     }
 
-    let (mtime, size) = source_metadata(input)?;
-    write_sidecar(
-        cache_dir,
-        recording_id,
-        mtime,
-        size,
-        strategy,
-        preview_profile,
-    )?;
-
-    if output.exists() {
-        fs::remove_file(output).map_err(|e| e.to_string())?;
-    }
-    fs::rename(&tmp, output).map_err(|e| format!("cache rename failed: {e}"))?;
     Ok(())
 }
 
@@ -532,6 +667,51 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn streamcopy_inplace_temp_path_uses_replaybox_suffix() {
+        let original = PathBuf::from("/videos/clip.mp4");
+        assert_eq!(
+            streamcopy_inplace_temp_path(&original),
+            PathBuf::from("/videos/clip.replaybox.tmp.mp4")
+        );
+    }
+
+    #[test]
+    fn is_mp4_source_matches_extension_case_insensitively() {
+        assert!(is_mp4_source(Path::new("/a/clip.mp4")));
+        assert!(is_mp4_source(Path::new("/a/clip.MP4")));
+        assert!(!is_mp4_source(Path::new("/a/clip.mkv")));
+    }
+
+    #[test]
+    fn remove_recording_cache_deletes_cache_and_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let id = "rec-1";
+        fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
+        fs::write(sidecar_path(&cache_dir, id), b"{}").unwrap();
+
+        remove_recording_cache(&cache_dir, id);
+
+        assert!(!cache_file_path(&cache_dir, id).exists());
+        assert!(!sidecar_path(&cache_dir, id).exists());
+    }
+
+    #[test]
+    fn is_playback_cache_path_detects_files_under_cache_root() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let cached = cache_file_path(&cache_dir, "rec-1");
+        fs::write(&cached, b"cached").unwrap();
+        let outside = tmp.path().join("outside.mp4");
+        fs::write(&outside, b"outside").unwrap();
+
+        assert!(is_playback_cache_path(&cache_dir, &cached));
+        assert!(!is_playback_cache_path(&cache_dir, &outside));
+    }
+
+    #[test]
     fn cache_temp_path_ends_with_mp4_for_ffmpeg() {
         let output = PathBuf::from("/cache/rec-1.mp4");
         let tmp = cache_temp_path(&output);
@@ -549,9 +729,16 @@ mod tests {
 
     #[test]
     fn audio_copy_compatible_accepts_aac_mp3() {
-        assert!(audio_copy_compatible(Some("aac")));
-        assert!(audio_copy_compatible(Some("MP3")));
-        assert!(!audio_copy_compatible(Some("opus")));
+        assert!(playback::audio_copy_compatible(Some("aac")));
+        assert!(playback::audio_copy_compatible(Some("MP3")));
+        assert!(!playback::audio_copy_compatible(Some("opus")));
+    }
+
+    #[test]
+    fn direct_playback_audio_includes_opus() {
+        assert!(playback::is_direct_playback_audio(Some("opus")));
+        assert!(playback::is_direct_playback_audio(Some("aac")));
+        assert!(!playback::is_direct_playback_audio(Some("pcm_s16le")));
     }
 
     #[test]
@@ -572,7 +759,7 @@ mod tests {
             id,
             mtime,
             size,
-            PlaybackStrategy::RemuxAudio,
+            PlaybackStrategy::StreamCopy,
             None,
         )
         .unwrap();
@@ -581,7 +768,7 @@ mod tests {
             &cache_dir,
             id,
             &source,
-            PlaybackStrategy::RemuxAudio,
+            PlaybackStrategy::StreamCopy,
             None,
         )
         .is_some());
@@ -604,7 +791,7 @@ mod tests {
             id,
             mtime,
             size,
-            PlaybackStrategy::RemuxAudio,
+            PlaybackStrategy::StreamCopy,
             None,
         )
         .unwrap();
@@ -616,14 +803,55 @@ mod tests {
             &cache_dir,
             id,
             &source,
-            PlaybackStrategy::RemuxAudio,
+            PlaybackStrategy::StreamCopy,
             None,
         )
         .is_none());
     }
 
     #[test]
-    fn remux_cache_insufficient_for_transcode_requirement() {
+    fn legacy_remux_sidecar_satisfies_stream_copy_requirement() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let source = tmp.path().join("source.mp4");
+        fs::write(&source, b"source-bytes").unwrap();
+        let (mtime, size) = source_metadata(&source).unwrap();
+
+        let id = "rec-1";
+        fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::StreamCopy,
+            None,
+        )
+        .unwrap();
+
+        let sidecar = fs::read_to_string(sidecar_path(&cache_dir, id)).unwrap();
+        let mut legacy: CacheSidecar = serde_json::from_str(&sidecar).unwrap();
+        legacy.strategy = "remux".into();
+        fs::write(
+            sidecar_path(&cache_dir, id),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::StreamCopy,
+            None,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn stream_copy_cache_insufficient_for_transcode_requirement() {
         let tmp = TempDir::new().unwrap();
         let cache_dir = tmp.path().join("playback");
         fs::create_dir_all(&cache_dir).unwrap();
@@ -639,7 +867,7 @@ mod tests {
             id,
             mtime,
             size,
-            PlaybackStrategy::RemuxAudio,
+            PlaybackStrategy::StreamCopy,
             None,
         )
         .unwrap();
@@ -766,12 +994,16 @@ mod tests {
     #[test]
     fn preview_profile_key_includes_encoder_scale_and_fps() {
         assert_eq!(
-            preview_profile_key(28, 2, true),
+            preview_profile_key(28, 2, ffmpeg::VideoEncoder::Nvenc),
             "crf28:s2:30fps:nvenc"
         );
         assert_eq!(
-            preview_profile_key(28, 4, false),
+            preview_profile_key(28, 4, ffmpeg::VideoEncoder::Software),
             "crf28:s4:30fps:x264"
+        );
+        assert_eq!(
+            preview_profile_key(28, 2, ffmpeg::VideoEncoder::Vaapi),
+            "crf28:s2:30fps:vaapi"
         );
     }
 
@@ -800,8 +1032,8 @@ mod tests {
         let opts = PreviewEncodeOptions {
             crf: 30,
             scale: 2,
-            use_nvenc: false,
-            profile_key: preview_profile_key(30, 2, false),
+            encoder: ffmpeg::VideoEncoder::Software,
+            profile_key: preview_profile_key(30, 2, ffmpeg::VideoEncoder::Software),
         };
 
         assert!(is_cache_valid(
@@ -832,15 +1064,15 @@ mod tests {
             mtime,
             size,
             PlaybackStrategy::Transcode,
-            Some(preview_profile_key(28, 2, false)),
+            Some(preview_profile_key(28, 2, ffmpeg::VideoEncoder::Software)),
         )
         .unwrap();
 
         let opts = PreviewEncodeOptions {
             crf: 28,
             scale: 4,
-            use_nvenc: false,
-            profile_key: preview_profile_key(28, 4, false),
+            encoder: ffmpeg::VideoEncoder::Software,
+            profile_key: preview_profile_key(28, 4, ffmpeg::VideoEncoder::Software),
         };
 
         assert!(is_cache_valid(
@@ -865,7 +1097,7 @@ mod tests {
 
         let id = "rec-1";
         fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
-        let profile = preview_profile_key(28, 2, false);
+        let profile = preview_profile_key(28, 2, ffmpeg::VideoEncoder::Software);
         write_sidecar(
             &cache_dir,
             id,
@@ -879,7 +1111,7 @@ mod tests {
         let opts = PreviewEncodeOptions {
             crf: 28,
             scale: 2,
-            use_nvenc: false,
+            encoder: ffmpeg::VideoEncoder::Software,
             profile_key: profile,
         };
 
@@ -918,8 +1150,8 @@ mod tests {
         let opts = PreviewEncodeOptions {
             crf: 28,
             scale: 2,
-            use_nvenc: false,
-            profile_key: preview_profile_key(28, 2, false),
+            encoder: ffmpeg::VideoEncoder::Software,
+            profile_key: preview_profile_key(28, 2, ffmpeg::VideoEncoder::Software),
         };
 
         assert!(is_cache_valid(

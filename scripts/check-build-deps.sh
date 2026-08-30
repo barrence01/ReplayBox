@@ -204,6 +204,7 @@ check_ffmpeg_profile() {
   need_cmd nasm || true
   if command -v pkg-config >/dev/null 2>&1; then
     need_pkgconfig x264 "libx264-dev / x264" || true
+    need_pkgconfig libva "libva-dev / libva" || true
   fi
 }
 
@@ -262,6 +263,7 @@ sudo pacman -S --needed \
   nasm \
   pkgconf \
   x264 \
+  libva \
   nodejs \
   npm \
   rust \
@@ -294,6 +296,7 @@ sudo apt update && sudo apt install -y \
   build-essential \
   nasm \
   libx264-dev \
+  libva-dev \
   libssl-dev \
   libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev \

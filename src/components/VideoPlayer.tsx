@@ -89,6 +89,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     }, []);
     const missingNotified = useRef(false);
     const fallbackLevel = useRef(0);
+    const fallbackInProgressRef = useRef(false);
     const endedNaturally = useRef(false);
     const metadataLoaded = useRef(false);
     const isSeekingRef = useRef(false);
@@ -120,11 +121,15 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       queuedAt: string | null;
       startedAt: string | null;
       queuePosition: number | null;
+      previewStrategy: string | null;
+      previewInplace: boolean | null;
     }>({
       queueStatus: null,
       queuedAt: null,
       startedAt: null,
       queuePosition: null,
+      previewStrategy: null,
+      previewInplace: null,
     });
     const [videoSrc, setVideoSrc] = useState("");
     const [playbackMode, setPlaybackMode] = useState<string>("direct");
@@ -162,6 +167,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         queuedAt: null,
         startedAt: null,
         queuePosition: null,
+        previewStrategy: null,
+        previewInplace: null,
       };
       setPreparingStatusText("");
       setCanProcessNext(false);
@@ -178,12 +185,40 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       return meta.queuedAt ?? meta.startedAt;
     }
 
+    function shouldSuppressPlaybackError(): boolean {
+      if (fallbackInProgressRef.current) {
+        return true;
+      }
+      if (playbackMode === "preparing") {
+        return true;
+      }
+      return playbackMode === "direct" && fallbackLevel.current >= 1;
+    }
+
+    function preparingActionLabel(
+      previewStrategy: string | null,
+      previewInplace: boolean | null,
+    ): string {
+      if (previewStrategy === "transcode") {
+        return "Encoding preview";
+      }
+      if (previewStrategy === "stream_copy" && previewInplace) {
+        return "Optimizing recording";
+      }
+      if (previewStrategy === "stream_copy") {
+        return "Preparing file";
+      }
+      return "Preparing preview";
+    }
+
     function buildPreparingStatusText(
       meta: {
         queueStatus: string | null;
         queuedAt: string | null;
         startedAt: string | null;
         queuePosition: number | null;
+        previewStrategy: string | null;
+        previewInplace: boolean | null;
       },
       nowMs: number,
     ): string {
@@ -193,7 +228,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           meta.queuePosition != null ? ` · #${meta.queuePosition}` : "";
         return `Waiting in queue${pos} (${elapsed})`;
       }
-      return `Preparing preview… (${elapsed})`;
+      return `${preparingActionLabel(meta.previewStrategy, meta.previewInplace)}… (${elapsed})`;
     }
 
     function refreshPreparingStatusText() {
@@ -208,6 +243,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         queuedAt: info.queuedAt ?? null,
         startedAt: info.startedAt ?? null,
         queuePosition: info.queuePosition ?? null,
+        previewStrategy: info.previewStrategy ?? null,
+        previewInplace: info.previewInplace ?? null,
       };
       const status = preparingMetaRef.current.queueStatus;
       const position = preparingMetaRef.current.queuePosition;
@@ -336,9 +373,18 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     }
 
     function reportPlayError(error: unknown) {
-      if (!isPlayInterruptedError(error)) {
-        onError(`Playback failed: ${String(error)}`);
+      if (isPlayInterruptedError(error)) {
+        return;
       }
+      if (playbackMode === "direct" && fallbackLevel.current < 1) {
+        console.info("[ReplayBox playback] play() failed in direct → stream_copy");
+        void requestFallbackRef.current(1);
+        return;
+      }
+      if (shouldSuppressPlaybackError()) {
+        return;
+      }
+      onError(`Playback failed: ${String(error)}`);
     }
 
     function completeSeek(resumePlayback: boolean) {
@@ -371,17 +417,22 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       const video = videoRef.current;
       const intendedMs = seekTargetMsRef.current;
       resumeAfterSeekRef.current = false;
-      const shouldTranscode =
-        playbackMode === "direct" &&
-        fallbackLevel.current < 2 &&
-        intendedMs !== null;
+      const fallbackLevelTarget =
+        playbackMode === "direct" && fallbackLevel.current < 1
+          ? 1
+          : playbackMode === "cache" && fallbackLevel.current < 2
+            ? 2
+            : null;
       finishSeek();
       if (video) {
         onTimeUpdate(clampToSelection(video.currentTime * 1000));
       }
-      if (shouldTranscode && intendedMs !== null) {
+      if (fallbackLevelTarget !== null && intendedMs !== null) {
         pendingSeekAfterFallbackRef.current = intendedMs;
-        void requestFallbackRef.current(2);
+        console.info(
+          `[ReplayBox playback] locked seek failed in ${playbackMode} → fallback ${fallbackLevelTarget}`,
+        );
+        void requestFallbackRef.current(fallbackLevelTarget);
       }
     }
 
@@ -602,6 +653,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     }
 
     function applyPlaybackInfo(info: PlaybackInfo) {
+      if (info.mode !== "preparing") {
+        fallbackInProgressRef.current = false;
+      }
       setPlaybackMode(info.mode);
       if (info.mode === "preparing") {
         setPreparing(true);
@@ -690,7 +744,11 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     async function requestFallback(level: 1 | 2) {
       if (fallbackLevel.current >= level) return;
       fallbackLevel.current = level;
+      fallbackInProgressRef.current = true;
       setLoading(true);
+      setPreparing(true);
+      setVideoSrc("");
+      onError(null);
       clearPlaybackTimers();
       const requestedId = recordingId;
       try {
@@ -699,10 +757,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           fallbackLevel: level,
         });
         if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          fallbackInProgressRef.current = false;
           return;
         }
         applyPlaybackInfo(info);
       } catch (e) {
+        fallbackInProgressRef.current = false;
         if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
           return;
         }
@@ -716,11 +776,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
     async function handleLoadTimeout() {
       if (playbackMode === "direct" && fallbackLevel.current < 1) {
+        console.info("[ReplayBox playback] metadata timeout in direct → stream_copy");
         await requestFallback(1);
         return;
       }
       if (playbackMode === "cache" && fallbackLevel.current < 2) {
+        console.info("[ReplayBox playback] metadata timeout in cache → transcode");
         await requestFallback(2);
+        return;
+      }
+      if (shouldSuppressPlaybackError()) {
         return;
       }
       onError(
@@ -731,6 +796,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     useEffect(() => {
       missingNotified.current = false;
       fallbackLevel.current = 0;
+      fallbackInProgressRef.current = false;
       endedNaturally.current = false;
       metadataLoaded.current = false;
       isSeekingRef.current = false;
@@ -773,6 +839,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       return () => {
         cancelled = true;
         loadCancelledRef.current = true;
+        fallbackInProgressRef.current = false;
         clearPlaybackTimers();
         clearScrubSeekTimeout();
       };
@@ -863,11 +930,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       if (endedNaturally.current) return;
 
       if (playbackMode === "direct" && fallbackLevel.current < 1) {
+        console.info("[ReplayBox playback] video error in direct → stream_copy");
         void requestFallback(1);
         return;
       }
       if (playbackMode === "cache" && fallbackLevel.current < 2) {
+        console.info("[ReplayBox playback] video error in cache → transcode");
         void requestFallback(2);
+        return;
+      }
+      if (shouldSuppressPlaybackError()) {
         return;
       }
 

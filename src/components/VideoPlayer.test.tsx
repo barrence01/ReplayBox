@@ -2,6 +2,7 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
+import { SEEK_MAX_MS, SEEK_SETTLE_MS } from "../lib/videoSeek";
 
 const getPlaybackInfoMock = vi.fn();
 const prioritizePreviewForRecordingMock = vi.fn();
@@ -98,7 +99,7 @@ describe("VideoPlayer", () => {
     expect(HTMLMediaElement.prototype.load).toHaveBeenCalled();
   });
 
-  it("requests cache remux fallback after direct error", async () => {
+  it("requests stream copy fallback after direct error", async () => {
     getPlaybackInfoMock
       .mockResolvedValueOnce({
         url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
@@ -142,7 +143,208 @@ describe("VideoPlayer", () => {
     expect(onError).toHaveBeenCalledWith(null);
   });
 
-  it("cascades from cache remux to transcode on error", async () => {
+  it("requests stream copy fallback when play fails in direct mode", async () => {
+    getPlaybackInfoMock
+      .mockResolvedValueOnce({
+        url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+        mode: "direct",
+      })
+      .mockResolvedValueOnce({
+        url: "",
+        mode: "preparing",
+      });
+
+    const playMock = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockRejectedValue(new Error("playback failed"));
+
+    const onError = vi.fn();
+    const ref = createRef<VideoPlayerHandle>();
+    const { container } = render(
+      <VideoPlayer
+        ref={ref}
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={onError}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    await act(async () => {
+      await ref.current?.play();
+    });
+
+    await waitFor(() => {
+      expect(getPlaybackInfoMock).toHaveBeenCalledWith("rec-1", {
+        forceFallback: true,
+        fallbackLevel: 1,
+      });
+    });
+
+    expect(onError).not.toHaveBeenCalledWith(
+      expect.stringContaining("Playback failed"),
+    );
+
+    playMock.mockRestore();
+  });
+
+  it("does not report errors when video error follows play fallback", async () => {
+    getPlaybackInfoMock
+      .mockResolvedValueOnce({
+        url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+        mode: "direct",
+      })
+      .mockResolvedValueOnce({
+        url: "",
+        mode: "preparing",
+        previewStrategy: "stream_copy",
+        previewInplace: true,
+      });
+
+    const playMock = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockRejectedValue(new DOMException("not supported", "NotSupportedError"));
+
+    const onError = vi.fn();
+    const ref = createRef<VideoPlayerHandle>();
+    const { container } = render(
+      <VideoPlayer
+        ref={ref}
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={onError}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    await act(async () => {
+      await ref.current?.play();
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    video.dispatchEvent(new Event("error"));
+
+    await waitFor(() => {
+      expect(getPlaybackInfoMock).toHaveBeenCalledWith("rec-1", {
+        forceFallback: true,
+        fallbackLevel: 1,
+      });
+    });
+
+    expect(onError).not.toHaveBeenCalledWith(
+      expect.stringContaining("Playback failed"),
+    );
+    expect(onError).not.toHaveBeenCalledWith(
+      expect.stringContaining("Video playback failed"),
+    );
+
+    playMock.mockRestore();
+  });
+
+  it("shows optimizing recording while preparing in-place stream copy", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    getPlaybackInfoMock
+      .mockResolvedValueOnce({
+        url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+        mode: "direct",
+      })
+      .mockResolvedValueOnce({
+        url: "",
+        mode: "preparing",
+        previewStrategy: "stream_copy",
+        previewInplace: true,
+        queueStatus: "processing",
+        startedAt: new Date().toISOString(),
+      });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    video.dispatchEvent(new Event("error"));
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Optimizing recording");
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("applies direct mode after in-place stream copy completes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    getPlaybackInfoMock
+      .mockResolvedValueOnce({
+        url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+        mode: "direct",
+      })
+      .mockResolvedValueOnce({
+        url: "",
+        mode: "preparing",
+        previewStrategy: "stream_copy",
+        previewInplace: true,
+      })
+      .mockResolvedValueOnce({
+        url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+        mode: "direct",
+      });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    video.dispatchEvent(new Event("error"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+
+    await waitFor(() => {
+      const next = container.querySelector("video");
+      expect(next?.getAttribute("src")).toBe(
+        "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      );
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("cascades from cache stream copy to transcode on error", async () => {
     getPlaybackInfoMock
       .mockResolvedValueOnce({
         url: "http://127.0.0.1:1/media?path=%2Fcache%2Fclip.mp4",
@@ -343,6 +545,62 @@ describe("VideoPlayer", () => {
     });
 
     expect(container.textContent).toContain("Preparing preview… (00:03)");
+  });
+
+  it("shows encoding message while preparing a transcode preview", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "",
+      mode: "preparing",
+      queueStatus: "processing",
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      previewStrategy: "transcode",
+    });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Encoding preview… (00:00)");
+    });
+  });
+
+  it("shows preparing file message while stream copying", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "",
+      mode: "preparing",
+      queueStatus: "processing",
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      previewStrategy: "stream_copy",
+    });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Preparing file… (00:00)");
+    });
   });
 
   it("shows waiting in queue status with position", async () => {
@@ -938,7 +1196,7 @@ describe("VideoPlayer", () => {
     expect(onTimeUpdate).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5600);
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 100);
     });
 
     expect(onTimeUpdate).toHaveBeenCalledWith(1000);
@@ -1958,7 +2216,7 @@ describe("VideoPlayer", () => {
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
     act(() => {
-      vi.advanceTimersByTime(4000);
+      vi.advanceTimersByTime(SEEK_MAX_MS - SEEK_SETTLE_MS * 2);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -2016,14 +2274,14 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(8000);
 
     act(() => {
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(SEEK_MAX_MS + 500);
     });
 
     expect(onTimeUpdate).toHaveBeenCalledWith(1200);
     expect(onTimeUpdate).not.toHaveBeenCalledWith(8000);
   });
 
-  it("requests transcode fallback when locked seek fails in direct mode", async () => {
+  it("requests stream copy fallback when locked seek fails in direct mode", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     getPlaybackInfoMock
@@ -2077,13 +2335,13 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(8000);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 500);
     });
 
     await waitFor(() => {
       expect(getPlaybackInfoMock).toHaveBeenCalledWith("rec-1", {
         forceFallback: true,
-        fallbackLevel: 2,
+        fallbackLevel: 1,
       });
     });
 
@@ -2209,7 +2467,7 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(2500);
 
     act(() => {
-      vi.advanceTimersByTime(5600);
+      vi.advanceTimersByTime(SEEK_MAX_MS + 100);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -2308,7 +2566,7 @@ describe("VideoPlayer", () => {
     ref.current?.seekAndLock(8000);
 
     act(() => {
-      vi.advanceTimersByTime(5600);
+      vi.advanceTimersByTime(SEEK_MAX_MS + 100);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);

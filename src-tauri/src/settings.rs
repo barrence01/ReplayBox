@@ -74,7 +74,8 @@ pub struct Settings {
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
     pub compress_crf: u8,
-    pub prefer_nvenc: bool,
+    #[serde(alias = "preferNvenc")]
+    pub prefer_hardware_encoding: bool,
     #[serde(default)]
     pub launch_on_startup: bool,
     #[serde(default = "default_playback_cache_max_gb")]
@@ -92,7 +93,7 @@ impl Default for Settings {
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
             compress_crf: 26,
-            prefer_nvenc: true,
+            prefer_hardware_encoding: true,
             launch_on_startup: false,
             playback_cache_max_gb: DEFAULT_PLAYBACK_CACHE_MAX_GB,
             preview_crf: default_preview_crf(),
@@ -243,7 +244,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.watch_dir = "/tmp/recordings".to_string();
         settings.compress_crf = 22;
-        settings.prefer_nvenc = false;
+        settings.prefer_hardware_encoding = false;
         settings.launch_on_startup = true;
         settings.playback_cache_max_gb = 10;
         settings.preview_crf = 30;
@@ -252,7 +253,7 @@ mod tests {
         let loaded = Settings::load(&path);
         assert_eq!(loaded.watch_dir, "/tmp/recordings");
         assert_eq!(loaded.compress_crf, 22);
-        assert!(!loaded.prefer_nvenc);
+        assert!(!loaded.prefer_hardware_encoding);
         assert!(loaded.launch_on_startup);
         assert_eq!(loaded.playback_cache_max_gb, 10);
         assert_eq!(loaded.preview_crf, 30);

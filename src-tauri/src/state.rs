@@ -1,4 +1,4 @@
-use crate::ffmpeg;
+use crate::ffmpeg::{self, HardwareEncodingStatus, VideoEncoder};
 use crate::job_queue::{new_edit_job_queue, SharedEditJobQueue};
 use crate::job_run_gate::JobRunGate;
 use crate::preview_queue::{new_preview_queue, SharedPreviewQueue};
@@ -20,23 +20,32 @@ pub struct ScanState {
 #[derive(Debug, Default)]
 pub struct EncoderCache {
     ffmpeg_path: String,
-    nvenc_available: Option<bool>,
+    prefer_hardware_encoding: bool,
+    status: Option<HardwareEncodingStatus>,
 }
 
 impl EncoderCache {
-    pub fn probe_nvenc(&mut self, ffmpeg_path: &str) -> bool {
-        if self.nvenc_available.is_some() && self.ffmpeg_path == ffmpeg_path {
-            return self.nvenc_available.unwrap_or(false);
+    pub fn probe_hardware_encoding(
+        &mut self,
+        ffmpeg_path: &str,
+        prefer_hardware_encoding: bool,
+    ) -> HardwareEncodingStatus {
+        if self.status.is_some()
+            && self.ffmpeg_path == ffmpeg_path
+            && self.prefer_hardware_encoding == prefer_hardware_encoding
+        {
+            return self.status.clone().unwrap();
         }
-        let available = ffmpeg::encoder_available(ffmpeg_path, "h264_nvenc");
+        let status = ffmpeg::hardware_encoding_status(ffmpeg_path, prefer_hardware_encoding);
         self.ffmpeg_path = ffmpeg_path.to_string();
-        self.nvenc_available = Some(available);
-        available
+        self.prefer_hardware_encoding = prefer_hardware_encoding;
+        self.status = Some(status.clone());
+        status
     }
 
     pub fn invalidate(&mut self) {
         self.ffmpeg_path.clear();
-        self.nvenc_available = None;
+        self.status = None;
     }
 }
 
@@ -87,9 +96,37 @@ impl AppState {
         crate::tools::resolve_ffprobe(&settings, self.resource_dir.as_deref())
     }
 
-    pub fn nvenc_available(&self) -> bool {
+    pub fn resolved_settings(&self) -> Settings {
+        let mut settings = self.settings.lock().clone();
+        settings.ffmpeg_path = self.ffmpeg_bin();
+        settings.ffprobe_path = self.ffprobe_bin();
+        settings
+    }
+
+    pub fn hardware_encoding_status(&self) -> HardwareEncodingStatus {
+        let settings = self.settings.lock();
+        let ffmpeg = crate::tools::resolve_ffmpeg(&settings, self.resource_dir.as_deref());
+        let prefer = settings.prefer_hardware_encoding;
+        drop(settings);
+        self.encoder_cache
+            .lock()
+            .probe_hardware_encoding(&ffmpeg, prefer)
+    }
+
+    pub fn resolved_video_encoder(&self) -> VideoEncoder {
+        self.hardware_encoding_status().active
+    }
+
+    pub fn preview_video_encoder(&self) -> VideoEncoder {
         let ffmpeg = self.ffmpeg_bin();
-        self.encoder_cache.lock().probe_nvenc(&ffmpeg)
+        ffmpeg::resolve_video_encoder(&ffmpeg, true)
+    }
+
+    pub fn nvenc_available(&self) -> bool {
+        matches!(
+            self.resolved_video_encoder(),
+            VideoEncoder::Nvenc
+        )
     }
 
     pub fn notify_job_workers(&self) {
@@ -110,38 +147,116 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use super::AppState;
     use super::EncoderCache;
+    use crate::ffmpeg::{HardwareEncodingStatus, VideoEncoder};
+
+    fn sample_status(active: VideoEncoder) -> HardwareEncodingStatus {
+        HardwareEncodingStatus {
+            active,
+            nvenc_compiled: true,
+            nvenc_runtime: active == VideoEncoder::Nvenc,
+            vaapi_compiled: true,
+            vaapi_runtime: active == VideoEncoder::Vaapi,
+            vaapi_device: None,
+        }
+    }
 
     #[test]
-    fn encoder_cache_reuses_result_for_same_path() {
+    fn encoder_cache_reuses_result_for_same_path_and_preference() {
         let mut cache = EncoderCache {
             ffmpeg_path: "/opt/ffmpeg".into(),
-            nvenc_available: Some(true),
+            prefer_hardware_encoding: true,
+            status: Some(sample_status(VideoEncoder::Nvenc)),
         };
-        assert!(cache.probe_nvenc("/opt/ffmpeg"));
-        assert_eq!(cache.nvenc_available, Some(true));
+        let status = cache.probe_hardware_encoding("/opt/ffmpeg", true);
+        assert_eq!(status.active, VideoEncoder::Nvenc);
+        assert!(cache.status.is_some());
     }
 
     #[test]
     fn encoder_cache_reprobes_when_ffmpeg_path_changes() {
         let mut cache = EncoderCache {
             ffmpeg_path: "/opt/ffmpeg".into(),
-            nvenc_available: Some(true),
+            prefer_hardware_encoding: true,
+            status: Some(sample_status(VideoEncoder::Nvenc)),
         };
-        let available = cache.probe_nvenc("/missing/ffmpeg-bin");
-        assert!(!available);
+        let status = cache.probe_hardware_encoding("/missing/ffmpeg-bin", true);
         assert_eq!(cache.ffmpeg_path, "/missing/ffmpeg-bin");
-        assert_eq!(cache.nvenc_available, Some(false));
+        assert_ne!(status.active, VideoEncoder::Nvenc);
     }
 
     #[test]
     fn encoder_cache_invalidate_clears_probe() {
         let mut cache = EncoderCache {
             ffmpeg_path: "/opt/ffmpeg".into(),
-            nvenc_available: Some(true),
+            prefer_hardware_encoding: true,
+            status: Some(sample_status(VideoEncoder::Nvenc)),
         };
         cache.invalidate();
         assert!(cache.ffmpeg_path.is_empty());
-        assert!(cache.nvenc_available.is_none());
+        assert!(cache.status.is_none());
+    }
+
+    #[test]
+    fn resolved_settings_populates_tool_paths_when_saved_settings_are_empty() {
+        use crate::db;
+        use crate::settings::{AppPaths, Settings};
+        use std::fs;
+        use std::os::unix::fs::OpenOptionsExt;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let ffmpeg_dir = root.join("ffmpeg");
+        fs::create_dir_all(&ffmpeg_dir).unwrap();
+        for name in ["ffmpeg", "ffprobe"] {
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .mode(0o755)
+                .open(ffmpeg_dir.join(name))
+                .unwrap();
+        }
+        let paths = AppPaths {
+            config_dir: root.to_path_buf(),
+            data_dir: root.to_path_buf(),
+            log_dir: root.join("logs"),
+            cache_dir: root.join("cache"),
+        };
+        fs::create_dir_all(&paths.log_dir).unwrap();
+        let conn = db::open_db(&paths.db_path()).unwrap();
+        let state = AppState::new(paths, Some(root.to_path_buf()), conn, Settings::default());
+        let settings = state.resolved_settings();
+        assert_eq!(
+            settings.ffmpeg_path,
+            ffmpeg_dir.join("ffmpeg").to_string_lossy()
+        );
+        assert_eq!(
+            settings.ffprobe_path,
+            ffmpeg_dir.join("ffprobe").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn log_dir_is_exposed_on_app_paths() {
+        use crate::db;
+        use crate::settings::{AppPaths, Settings};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let log_dir = root.join("logs");
+        let paths = AppPaths {
+            config_dir: root.to_path_buf(),
+            data_dir: root.to_path_buf(),
+            log_dir: log_dir.clone(),
+            cache_dir: root.join("cache"),
+        };
+        fs::create_dir_all(&log_dir).unwrap();
+        let conn = db::open_db(&paths.db_path()).unwrap();
+        let state = AppState::new(paths, None, conn, Settings::default());
+        assert_eq!(state.paths.log_dir, log_dir);
     }
 }

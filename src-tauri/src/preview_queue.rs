@@ -3,11 +3,12 @@
 use crate::job_queue::{is_terminal, now_rfc3339};
 use crate::job_run_gate::JobRunGate;
 use crate::models::{JobStatus, Recording};
-use crate::playback::PlaybackStrategy;
+use crate::playback::{self, PlaybackStrategy};
 use crate::playback_cache::{
-    cache_file_path, cache_temp_path, is_cache_valid, run_ffmpeg_cache_job,
-    CleanupPolicy, PreviewEncodeOptions,
+    cache_file_path, cache_temp_path, is_cache_valid, is_mp4_source, run_ffmpeg_cache_job,
+    run_ffmpeg_streamcopy_job, CleanupPolicy, PreviewEncodeOptions, StreamCopyResult,
 };
+use crate::catalog;
 use crate::process_util::{kill_child, ChildSlot};
 use crate::state::AppState;
 use parking_lot::{Condvar, Mutex};
@@ -428,16 +429,18 @@ impl PreviewQueue {
             };
         }
 
-        if state.settings.lock().playback_cache_max_gb == 0 {
+        let source = Path::new(&recording.path);
+        let inplace_streamcopy =
+            strategy == PlaybackStrategy::StreamCopy && is_mp4_source(source);
+        if state.settings.lock().playback_cache_max_gb == 0 && !inplace_streamcopy {
             return CacheJobStatus::Failed {
                 message: "Preview cache is disabled due to insufficient disk space.".into(),
             };
         }
 
         let cache_dir = state.paths.playback_cache_dir();
-        let source = Path::new(&recording.path);
         let settings = state.settings.lock().clone();
-        let encode_opts = PreviewEncodeOptions::from_settings(&settings, state.nvenc_available());
+        let encode_opts = PreviewEncodeOptions::from_settings(&settings, state.preview_video_encoder());
         let encode_ref = if strategy == PlaybackStrategy::Transcode {
             Some(&encode_opts)
         } else {
@@ -510,6 +513,7 @@ impl PreviewQueue {
             queued_at: now_rfc3339(),
             started_at: None,
             finished_at: None,
+            preview_strategy: Some(playback::strategy_sidecar_name(strategy).to_string()),
         };
 
         let entry = PreviewEntry {
@@ -554,7 +558,7 @@ pub struct PreviewWork {
 fn strategy_rank(strategy: PlaybackStrategy) -> u8 {
     match strategy {
         PlaybackStrategy::Direct => 0,
-        PlaybackStrategy::RemuxAudio => 1,
+        PlaybackStrategy::StreamCopy => 1,
         PlaybackStrategy::Transcode => 2,
     }
 }
@@ -682,9 +686,9 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
             };
             let paths = state.paths.clone();
             let ffmpeg = state.ffmpeg_bin();
-            let settings = state.settings.lock().clone();
+            let settings = state.resolved_settings();
             let encode_opts =
-                PreviewEncodeOptions::from_settings(&settings, state.nvenc_available());
+                PreviewEncodeOptions::from_settings(&settings, state.preview_video_encoder());
             let cleanup_policy = CleanupPolicy::from_settings(&settings);
             let cache_dir = paths.playback_cache_dir();
             let output = cache_file_path(&cache_dir, &work.recording_id);
@@ -709,23 +713,49 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
             };
 
             let started = Instant::now();
-            let result = run_ffmpeg_cache_job(
-                &ffmpeg,
-                &input,
-                &output,
-                work.strategy,
-                work.audio_codec.as_deref(),
-                &encode_opts,
-                &work.cancel,
-                &work.child,
-                &cache_dir,
-                &work.recording_id,
-                preview_profile,
-            )
-            .and_then(|_| {
-                crate::playback_cache::run_cache_cleanup(&cache_dir, &cleanup_policy);
-                Ok(output.clone())
-            });
+            let result: Result<PathBuf, String> = if work.strategy == PlaybackStrategy::StreamCopy {
+                run_ffmpeg_streamcopy_job(
+                    &ffmpeg,
+                    &input,
+                    work.audio_codec.as_deref(),
+                    &encode_opts,
+                    &work.cancel,
+                    &work.child,
+                    &cache_dir,
+                    &work.recording_id,
+                )
+                .and_then(|outcome| match outcome {
+                    StreamCopyResult::InPlace(path) => {
+                        if let Err(e) = catalog::index_file(&state, &settings, &path) {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "in-place remux succeeded but re-index failed"
+                            );
+                        }
+                        Ok(path)
+                    }
+                    StreamCopyResult::Cache(path) => {
+                        crate::playback_cache::run_cache_cleanup(&cache_dir, &cleanup_policy);
+                        Ok(path)
+                    }
+                })
+            } else {
+                run_ffmpeg_cache_job(
+                    &ffmpeg,
+                    &input,
+                    &output,
+                    work.strategy,
+                    work.audio_codec.as_deref(),
+                    &encode_opts,
+                    &work.cancel,
+                    &work.child,
+                    &cache_dir,
+                    &work.recording_id,
+                    preview_profile,
+                )
+                .map(|_| output.clone())
+            };
 
             let elapsed_ms = started.elapsed().as_millis();
             match &result {
@@ -744,6 +774,11 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
                     );
                     let _ = fs::remove_file(&output);
                     let _ = fs::remove_file(cache_temp_path(&output));
+                    if work.strategy == PlaybackStrategy::StreamCopy && is_mp4_source(&input) {
+                        let _ = fs::remove_file(crate::playback_cache::streamcopy_inplace_temp_path(
+                            &input,
+                        ));
+                    }
                 }
             }
 
@@ -796,6 +831,7 @@ mod tests {
             queued_at: now_rfc3339(),
             started_at: None,
             finished_at: None,
+            preview_strategy: Some(playback::strategy_sidecar_name(strategy).to_string()),
         };
         let entry = PreviewEntry {
             job,
@@ -818,7 +854,7 @@ mod tests {
     #[test]
     fn fifo_only_one_processing() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         let b = enqueue_raw(&q, "b", PlaybackStrategy::Transcode);
         let (id, _) = q.try_take_next().unwrap();
         assert_eq!(id, a);
@@ -831,7 +867,7 @@ mod tests {
     #[test]
     fn cancel_queued() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let id = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let id = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         let job = q.cancel_job(&id).unwrap();
         assert_eq!(job.status, "cancelled");
         assert!(q.inner.lock().pending.is_empty());
@@ -840,7 +876,7 @@ mod tests {
     #[test]
     fn cancel_for_recording_cancels_queued() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let id = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let id = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         let job = q
             .cancel_for_recording("a", Some("Cancelled: recording deleted"))
             .unwrap();
@@ -874,8 +910,8 @@ mod tests {
     #[test]
     fn lookup_by_recording_returns_position() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
-        let _b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
+        let _b = enqueue_raw(&q, "b", PlaybackStrategy::StreamCopy);
 
         let (job_b, pos_b) = q.lookup_by_recording("b").unwrap();
         assert_eq!(job_b.status, "queued");
@@ -891,7 +927,7 @@ mod tests {
     #[test]
     fn lookup_ignores_terminal() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         q.try_take_next().unwrap();
         q.finish_work(&a, Ok(PathBuf::from("/tmp/a.mp4")));
         assert!(q.lookup_by_recording("a").is_none());
@@ -900,7 +936,7 @@ mod tests {
     #[test]
     fn dismiss_terminal_only() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         assert!(q.dismiss(&a).is_err());
 
         q.try_take_next().unwrap();
@@ -912,8 +948,8 @@ mod tests {
     #[test]
     fn clear_finished_keeps_queued() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
-        let _b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
+        let _b = enqueue_raw(&q, "b", PlaybackStrategy::StreamCopy);
         q.try_take_next().unwrap();
         q.finish_work(&a, Ok(PathBuf::from("/tmp/a.mp4")));
 
@@ -927,7 +963,7 @@ mod tests {
     #[test]
     fn cancel_processing_sets_finished_at() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         q.try_take_next().unwrap();
         let job = q.cancel_job(&a).unwrap();
         assert_eq!(job.status, "cancelled");
@@ -939,7 +975,7 @@ mod tests {
     fn has_active_jobs_tracks_queue() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
         assert!(!q.has_active_jobs());
-        enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         assert!(q.has_active_jobs());
         let id = q.list()[0].id.clone();
         q.cancel_job(&id).unwrap();
@@ -949,8 +985,8 @@ mod tests {
     #[test]
     fn list_orders_queued_jobs_by_pending() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
-        let b = enqueue_raw(&q, "b", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
+        let b = enqueue_raw(&q, "b", PlaybackStrategy::StreamCopy);
         let listed = q.list();
         assert_eq!(listed[0].id, a);
         assert_eq!(listed[1].id, b);
@@ -963,9 +999,9 @@ mod tests {
     #[test]
     fn promote_recording_moves_queued_job_to_front() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        let a = enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        let a = enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         let _b = enqueue_raw(&q, "b", PlaybackStrategy::Transcode);
-        let c = enqueue_raw(&q, "c", PlaybackStrategy::RemuxAudio);
+        let c = enqueue_raw(&q, "c", PlaybackStrategy::StreamCopy);
         q.try_take_next().unwrap();
         assert_eq!(q.lookup_by_recording("b").unwrap().1, Some(1));
         assert_eq!(q.lookup_by_recording("c").unwrap().1, Some(2));
@@ -980,7 +1016,7 @@ mod tests {
     #[test]
     fn promote_recording_rejects_processing_job() {
         let q = PreviewQueue::new(Arc::new(JobRunGate::new()));
-        enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
         q.try_take_next().unwrap();
         let err = q.promote_recording("a").unwrap_err();
         assert!(err.contains("not queued"));
@@ -990,7 +1026,7 @@ mod tests {
     fn paused_gate_blocks_take_next() {
         let gate = Arc::new(JobRunGate::new());
         let q = PreviewQueue::new(gate.clone());
-        enqueue_raw(&q, "a", PlaybackStrategy::RemuxAudio);
+        enqueue_raw(&q, "a", PlaybackStrategy::StreamCopy);
 
         gate.set_jobs_paused(true);
         assert!(q.try_take_next().is_none());

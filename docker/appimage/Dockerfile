@@ -38,6 +38,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libssl-dev \
       libwebkit2gtk-4.1-dev \
       libx264-dev \
+      libva-dev \
       nasm \
       patchelf \
       pkg-config \

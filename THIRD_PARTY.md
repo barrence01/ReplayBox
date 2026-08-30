@@ -10,11 +10,15 @@ ReplayBox ships `ffmpeg` and `ffprobe` built from FFmpeg tag **n7.1** with:
 
 - `--enable-gpl`
 - `--enable-libx264`
+- `--enable-nvenc`
+- `--enable-vaapi`
 - static linking (`--enable-static --disable-shared`)
 
 Rebuild instructions: [scripts/build-ffmpeg.sh](scripts/build-ffmpeg.sh).
 
-**Corresponding source:** FFmpeg tag `n7.1` from [https://github.com/FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg) (or [https://git.ffmpeg.org/ffmpeg.git](https://git.ffmpeg.org/ffmpeg.git)), plus libx264 from your build host, using the configure flags in `scripts/build-ffmpeg.sh`.
+**Corresponding source:** FFmpeg tag `n7.1` from [https://github.com/FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg) (or [https://git.ffmpeg.org/ffmpeg.git](https://git.ffmpeg.org/ffmpeg.git)), plus libx264 and libva from your build host, and [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers) (build-time only), using the configure flags in `scripts/build-ffmpeg.sh`.
+
+NVENC and VAAPI encoders call into **host GPU drivers** at runtime; they are not redistributed inside the AppImage.
 
 License text: [licenses/GPL-2.0.txt](licenses/GPL-2.0.txt).
 
@@ -42,6 +46,8 @@ These are used at build time or linked permissively; they do not require GPL/LGP
 
 | Component | License |
 |-----------|---------|
+| nv-codec-headers (FFmpeg NVENC build) | MIT |
+| libva (FFmpeg VAAPI build) | MIT |
 | React, Vite, TypeScript tooling | MIT |
 | Tauri and Rust crates (see `Cargo.lock`) | MIT / Apache-2.0 / similar |
 | SQLite (`rusqlite` with `bundled`) | Public domain |

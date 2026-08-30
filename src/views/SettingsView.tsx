@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRequestGeneration } from "../hooks/useRequestGeneration";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Settings } from "../types";
+import { openPath } from "@tauri-apps/plugin-opener";
+import type { HardwareEncodingStatus, Settings, VideoEncoder } from "../types";
 import {
   checkWatchDir,
   clearAllCache,
   clearPlaybackCache,
+  getLogDir,
   getPlaybackCacheLimits,
   getPlaybackCacheStats,
-  nvencAvailable,
+  hardwareEncodingStatus,
   resolvedToolPaths,
   type PlaybackCacheLimits,
   type PlaybackCacheStats,
@@ -28,6 +30,33 @@ function clampCacheGb(value: number, limits: PlaybackCacheLimits): number {
   return Math.min(Math.max(value, 1), limits.maxGb);
 }
 
+function resolveDisplayEncoder(
+  status: HardwareEncodingStatus,
+  preferHardwareEncoding: boolean,
+): VideoEncoder {
+  if (!preferHardwareEncoding) {
+    return "software";
+  }
+  if (status.nvencRuntime) {
+    return "nvenc";
+  }
+  if (status.vaapiRuntime) {
+    return "vaapi";
+  }
+  return "software";
+}
+
+function activeEncoderLabel(active: VideoEncoder): string {
+  switch (active) {
+    case "nvenc":
+      return "NVENC";
+    case "vaapi":
+      return "VAAPI";
+    default:
+      return "Software";
+  }
+}
+
 export function SettingsView({ settings, tools, onSave }: Props) {
   const [draft, setDraft] = useState<Settings>(settings);
   const [limits, setLimits] = useState<PlaybackCacheLimits | null>(null);
@@ -37,7 +66,8 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
-  const [nvencReady, setNvencReady] = useState<boolean | null>(null);
+  const [logDir, setLogDir] = useState("");
+  const [hwStatus, setHwStatus] = useState<HardwareEncodingStatus | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const cacheClampAppliedRef = useRef(false);
   const cacheInfoGen = useRequestGeneration();
@@ -108,18 +138,31 @@ export function SettingsView({ settings, tools, onSave }: Props) {
         }
         setResolved({ ffmpeg: "", ffprobe: "" });
       });
-    nvencAvailable()
-      .then((ready) => {
+    getLogDir()
+      .then((dir) => {
         if (!isToolsCurrent(gen)) {
           return;
         }
-        setNvencReady(ready);
+        setLogDir(dir);
       })
       .catch(() => {
         if (!isToolsCurrent(gen)) {
           return;
         }
-        setNvencReady(null);
+        setLogDir("");
+      });
+    hardwareEncodingStatus()
+      .then((status) => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setHwStatus(status);
+      })
+      .catch(() => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setHwStatus(null);
       });
     return () => {
       invalidateToolsGen();
@@ -127,7 +170,6 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   }, [
     settings.ffmpegPath,
     settings.ffprobePath,
-    settings.preferNvenc,
     tools,
     nextToolsGen,
     isToolsCurrent,
@@ -250,6 +292,18 @@ export function SettingsView({ settings, tools, onSave }: Props) {
     }
   }
 
+  async function handleOpenLogsFolder() {
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      const dir = logDir || (await getLogDir());
+      await openPath(dir);
+    } catch (e) {
+      setMessage(String(e));
+      setMessageIsError(true);
+    }
+  }
+
   async function handleClearAllCache() {
     if (
       !window.confirm(
@@ -280,6 +334,11 @@ export function SettingsView({ settings, tools, onSave }: Props) {
     stats != null
       ? formatCacheUsage(stats.usedBytes, draft.playbackCacheMaxGb)
       : "—";
+
+  const displayEncoder =
+    hwStatus == null
+      ? null
+      : resolveDisplayEncoder(hwStatus, draft.preferHardwareEncoding);
 
   return (
     <section className="view">
@@ -355,13 +414,30 @@ export function SettingsView({ settings, tools, onSave }: Props) {
           <label className="check">
             <input
               type="checkbox"
-              checked={draft.preferNvenc}
+              checked={draft.preferHardwareEncoding}
               onChange={(e) =>
-                setDraft((d) => ({ ...d, preferNvenc: e.target.checked }))
+                setDraft((d) => ({
+                  ...d,
+                  preferHardwareEncoding: e.target.checked,
+                }))
               }
             />
-            Prefer NVENC when available
+            Prefer hardware encoding when available
           </label>
+          <p className="settings-field-meta">
+            Encoder:{" "}
+            <span
+              className={
+                displayEncoder != null && displayEncoder !== "software"
+                  ? "ok"
+                  : undefined
+              }
+            >
+              {displayEncoder == null
+                ? "Checking…"
+                : activeEncoderLabel(displayEncoder)}
+            </span>
+          </p>
         </section>
 
         <section className="settings-section">
@@ -411,17 +487,6 @@ export function SettingsView({ settings, tools, onSave }: Props) {
               preparation.
             </span>
           </label>
-
-          <p className="settings-field-meta">
-            Hardware encoding:{" "}
-            <span className={nvencReady ? "ok" : nvencReady === false ? "error" : ""}>
-              {nvencReady == null
-                ? "Checking…"
-                : nvencReady
-                  ? "NVENC available (used automatically for preview)"
-                  : "NVENC unavailable (software encoding fallback)"}
-            </span>
-          </p>
         </section>
 
         <section className="settings-section">
@@ -484,6 +549,21 @@ export function SettingsView({ settings, tools, onSave }: Props) {
             />
             Start ReplayBox in the tray when you log in
           </label>
+        </section>
+
+        <section className="settings-section">
+          <h2>Diagnostics</h2>
+          <p className="settings-field-meta hint">
+            Daily replaybox.log and ffmpeg.log files are kept for 7 days.
+          </p>
+          {logDir && (
+            <p className="settings-field-meta hint path">Logs: {logDir}</p>
+          )}
+          <div className="settings-cache-actions">
+            <button type="button" onClick={() => void handleOpenLogsFolder()}>
+              Open logs folder
+            </button>
+          </div>
         </section>
 
         <div className="settings-actions">

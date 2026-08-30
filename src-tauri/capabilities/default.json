@@ -24,7 +24,14 @@
     },
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        { "path": "$APPLOG" },
+        { "path": "$APPLOG/**" },
+        { "path": "$HOME/**" },
+        { "path": "/run/media/**" },
+        { "path": "/media/**" },
+        { "path": "/mnt/**" }
+      ]
     }
   ]
 }

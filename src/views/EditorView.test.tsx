@@ -97,7 +97,7 @@ function renderEditor(overrides: Partial<Parameters<typeof EditorView>[0]> = {})
     <EditorView
       recording={recording}
       folderRecordings={[]}
-      preferNvenc={false}
+      preferHardwareEncoding={false}
       editJobs={[]}
       onBack={() => undefined}
       onOpen={() => undefined}
@@ -434,7 +434,7 @@ describe("EditorView timeline wiring", () => {
       <EditorView
         recording={next}
         folderRecordings={[]}
-        preferNvenc={false}
+        preferHardwareEncoding={false}
         editJobs={[]}
         onBack={() => undefined}
         onOpen={() => undefined}
@@ -486,7 +486,7 @@ describe("EditorView timeline wiring", () => {
           trimMode: "fast",
           outputMode: "copy",
           crf: 26,
-          useNvenc: false,
+          preferHardwareEncoding: false,
         }),
       );
     });
@@ -522,7 +522,7 @@ describe("EditorView timeline wiring", () => {
       finishedAt: null,
     });
 
-    renderEditor({ preferNvenc: true });
+    renderEditor({ preferHardwareEncoding: true });
 
     fireEvent.click(screen.getByRole("button", { name: "Trim mode" }));
     fireEvent.click(screen.getByRole("button", { name: "Precise trim" }));
@@ -533,7 +533,7 @@ describe("EditorView timeline wiring", () => {
         expect.objectContaining({
           trimMode: "precise",
           crf: 26,
-          useNvenc: true,
+          preferHardwareEncoding: true,
         }),
       );
     });
