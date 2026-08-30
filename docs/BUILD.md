@@ -43,8 +43,9 @@ npm run tauri:dev
 
 That command:
 
-1. Prepares bundled FFmpeg (`prepare:ffmpeg`)
-2. Starts the Tauri + Vite dev app
+1. Verifies host deps for WebKit video preview (`check-build-deps.sh --dev`)
+2. Prepares bundled FFmpeg (`prepare:ffmpeg`)
+3. Starts the Tauri + Vite dev app
 
 
 
@@ -150,6 +151,7 @@ Validate before building:
 
 ```bash
 ./scripts/check-build-deps.sh           # full production build
+./scripts/check-build-deps.sh --dev      # tauri dev (WebKit video preview plugins)
 ./scripts/check-build-deps.sh --appimage # AppImage build (adds GStreamer runtime + libfuse2)
 ./scripts/check-build-deps.sh --ffmpeg   # bundled FFmpeg only
 ```
@@ -301,6 +303,8 @@ The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg wit
 | `nasm is required to build bundled FFmpeg`               | Install `nasm`                                                                                                                                                                                                                                                                                                                                         |
 | `libx264 not found`                                      | Install `x264` (and headers / pkg-config file)                                                                                                                                                                                                                                                                                                         |
 | Slow first build                                         | Normal: compiling FFmpeg from source can take several minutes                                                                                                                                                                                                                                                                                          |
+| `GStreamer element appsink/autoaudiosink not found` in dev | WebKitGTK needs host GStreamer plugins for editor video preview. Run `./scripts/check-build-deps.sh --dev` — it fails early with install hints. On Arch: `gst-plugins-base` + `gst-plugins-good` (+ `gst-plugins-bad`, `gst-libav` recommended). Verify: `gst-inspect-1.0 appsink autoaudiosink`. |
+| `WebKitWebProcess` + `GLib-GObject-CRITICAL` after opening editor | Often follows missing GStreamer elements above. Fix plugins first; if it persists, try `GDK_BACKEND=x11 npm run tauri:dev`. |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev`                                                                                                                                                                |
 | Vite `The service is no longer running` after crash      | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev`                                                                                                                                                                                                                                                         |
 | `failed to run linuxdeploy` when bundling AppImage       | Tauri hides linuxdeploy stderr unless `--verbose` is set. Use `./scripts/build-appimage.sh` (always passes `--verbose`, sets `NO_STRIP=true` and `APPIMAGE_EXTRACT_AND_RUN=1`, and dumps host/log matches on failure). Inspect `build/appimage-build.log`. Run `./scripts/check-build-deps.sh --appimage` first (`patchelf`, `libfuse2`/`libfuse2t64`, `librsvg2-bin`, `gstreamer1.0-tools`). If the Tauri tool cache is corrupt: `rm -rf ~/.cache/tauri/linuxdeploy*` |

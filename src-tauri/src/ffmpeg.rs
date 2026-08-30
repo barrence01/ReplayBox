@@ -293,6 +293,63 @@ pub fn encoder_available(ffmpeg: &str, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// CFR fps and GOP for scrub-friendly preview (~267ms keyframes @ 30fps).
+const PREVIEW_FPS: &str = "30";
+const PREVIEW_GOP: &str = "8";
+
+/// Build FFmpeg argument list for preview transcode (video + audio encode).
+/// `scale` is the denominator: 1 = original, 2 = half, 4 = quarter.
+pub fn preview_transcode_args(crf: u8, scale: u8, use_nvenc: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if scale > 1 {
+        args.push("-vf".into());
+        args.push(format!(
+            "scale=trunc(iw/{scale})*2:trunc(ih/{scale})*2"
+        ));
+    }
+
+    let crf_s = crf.to_string();
+    if use_nvenc {
+        args.extend([
+            "-c:v".into(),
+            "h264_nvenc".into(),
+            "-preset".into(),
+            "p1".into(),
+            "-cq".into(),
+            crf_s,
+            "-g".into(),
+            PREVIEW_GOP.into(),
+            "-keyint_min".into(),
+            PREVIEW_GOP.into(),
+        ]);
+    } else {
+        args.extend([
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-crf".into(),
+            crf_s,
+            "-g".into(),
+            PREVIEW_GOP.into(),
+            "-keyint_min".into(),
+            PREVIEW_GOP.into(),
+        ]);
+    }
+
+    args.extend([
+        "-fps_mode".into(),
+        "cfr".into(),
+        "-r".into(),
+        PREVIEW_FPS.into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+    ]);
+    args
+}
+
 pub fn binary_available(bin: &str) -> bool {
     Command::new(bin)
         .arg("-version")
@@ -674,5 +731,42 @@ mod tests {
     #[test]
     fn probe_info_from_json_rejects_invalid() {
         assert!(probe_info_from_json_bytes(b"not-json").is_err());
+    }
+
+    #[test]
+    fn preview_transcode_args_nvenc_includes_half_scale_and_cq() {
+        let args = preview_transcode_args(28, 2, true);
+        assert!(args.contains(&"-vf".to_string()));
+        assert!(args
+            .iter()
+            .any(|a| a.contains("scale=trunc(iw/2)*2:trunc(ih/2)*2")));
+        assert!(args.contains(&"h264_nvenc".to_string()));
+        assert!(args.contains(&"-cq".to_string()));
+        assert!(args.contains(&"28".to_string()));
+        assert!(args.contains(&"p1".to_string()));
+        assert!(args.contains(&"30".to_string()));
+        assert!(args.contains(&"8".to_string()));
+        assert!(!args.contains(&"-crf".to_string()));
+    }
+
+    #[test]
+    fn preview_transcode_args_quarter_scale() {
+        let args = preview_transcode_args(28, 4, false);
+        assert!(args
+            .iter()
+            .any(|a| a.contains("scale=trunc(iw/4)*2:trunc(ih/4)*2")));
+        assert!(args.contains(&"libx264".to_string()));
+    }
+
+    #[test]
+    fn preview_transcode_args_x264_omits_scale_when_original() {
+        let args = preview_transcode_args(30, 1, false);
+        assert!(!args.contains(&"-vf".to_string()));
+        assert!(args.contains(&"libx264".to_string()));
+        assert!(args.contains(&"-crf".to_string()));
+        assert!(args.contains(&"30".to_string()));
+        assert!(args.contains(&"ultrafast".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "-r" && w[1] == "30"));
+        assert!(args.windows(2).any(|w| w[0] == "-g" && w[1] == "8"));
     }
 }

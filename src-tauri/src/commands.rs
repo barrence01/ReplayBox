@@ -199,12 +199,24 @@ pub fn update_settings(
     settings: Settings,
 ) -> Result<Settings, String> {
     settings::validate_watch_dir(&settings.watch_dir)?;
+    settings::validate_preview_settings(&settings)?;
     let limits = disk_space::playback_cache_limits_for_dir(&state.paths.playback_cache_dir())?;
     settings::validate_playback_cache_max_gb(settings.playback_cache_max_gb, &limits)?;
     let path = state.paths.settings_path();
+    let prev = state.settings.lock().clone();
+    let ffmpeg = state.ffmpeg_bin();
+    let profile_changed = playback_cache::PreviewEncodeOptions::from_settings(&prev, &ffmpeg)
+        .profile_key
+        != playback_cache::PreviewEncodeOptions::from_settings(&settings, &ffmpeg).profile_key;
     settings.save(&path)?;
     *state.settings.lock() = settings.clone();
     sync_autostart(&app, settings.launch_on_startup)?;
+    if profile_changed {
+        for job in state.preview_queue.cancel_all() {
+            let _ = app.emit("preview-updated", job);
+        }
+        crate::tray_status::notify_queues_changed(&app);
+    }
     playback_cache::run_cache_cleanup(
         &state.paths.playback_cache_dir(),
         &playback_cache::CleanupPolicy::from_settings(&settings),
@@ -458,11 +470,23 @@ fn resolve_playback_info(
     let strategy = playback::playback_strategy(&recording, force, level);
     let cache_dir = state.paths.playback_cache_dir();
     let source = Path::new(&recording.path);
+    let settings = state.settings.lock().clone();
+    let ffmpeg = state.ffmpeg_bin();
+    let encode_opts = playback_cache::PreviewEncodeOptions::from_settings(&settings, &ffmpeg);
+    let encode_ref = if strategy == PlaybackStrategy::Transcode {
+        Some(&encode_opts)
+    } else {
+        None
+    };
 
     if strategy != PlaybackStrategy::Direct {
-        if let Some(cached) =
-            playback_cache::is_cache_valid(&cache_dir, &recording.id, source, strategy)
-        {
+        if let Some(cached) = playback_cache::is_cache_valid(
+            &cache_dir,
+            &recording.id,
+            source,
+            strategy,
+            encode_ref,
+        ) {
             let path = cached.to_string_lossy().to_string();
             return Ok(playback_info_cache(playback::build_media_url(
                 &base_url, &path,

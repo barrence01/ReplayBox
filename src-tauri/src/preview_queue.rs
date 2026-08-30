@@ -5,7 +5,7 @@ use crate::models::{JobStatus, Recording};
 use crate::playback::PlaybackStrategy;
 use crate::playback_cache::{
     cache_file_path, cache_temp_path, is_cache_valid, run_ffmpeg_cache_job, source_metadata,
-    write_cache_sidecar, CleanupPolicy,
+    write_cache_sidecar, CleanupPolicy, PreviewEncodeOptions,
 };
 use crate::state::AppState;
 use crate::job_run_gate::JobRunGate;
@@ -356,8 +356,18 @@ impl PreviewQueue {
 
         let cache_dir = state.paths.playback_cache_dir();
         let source = Path::new(&recording.path);
+        let settings = state.settings.lock().clone();
+        let ffmpeg = state.ffmpeg_bin();
+        let encode_opts = PreviewEncodeOptions::from_settings(&settings, &ffmpeg);
+        let encode_ref = if strategy == PlaybackStrategy::Transcode {
+            Some(&encode_opts)
+        } else {
+            None
+        };
 
-        if let Some(path) = is_cache_valid(&cache_dir, &recording.id, source, strategy) {
+        if let Some(path) =
+            is_cache_valid(&cache_dir, &recording.id, source, strategy, encode_ref)
+        {
             return CacheJobStatus::Ready { path };
         }
 
@@ -531,6 +541,8 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
             let (job_id, work) = state.preview_queue.take_next_work();
             let paths = state.paths.clone();
             let ffmpeg = state.ffmpeg_bin();
+            let settings = state.settings.lock().clone();
+            let encode_opts = PreviewEncodeOptions::from_settings(&settings, &ffmpeg);
             let cleanup_policy = CleanupPolicy::from_settings(&state.settings.lock());
             let cache_dir = paths.playback_cache_dir();
             let output = cache_file_path(&cache_dir, &work.recording_id);
@@ -555,17 +567,24 @@ pub fn spawn_preview_worker(app: tauri::AppHandle, state: Arc<AppState>) {
                 &output,
                 work.strategy,
                 work.audio_codec.as_deref(),
+                &encode_opts,
                 &work.cancel,
                 &work.child,
             )
             .and_then(|_| {
                 if let Ok((mtime, size)) = source_metadata(&input) {
+                    let preview_profile = if work.strategy == PlaybackStrategy::Transcode {
+                        Some(encode_opts.profile_key.clone())
+                    } else {
+                        None
+                    };
                     let _ = write_cache_sidecar(
                         &cache_dir,
                         &work.recording_id,
                         mtime,
                         size,
                         work.strategy,
+                        preview_profile,
                     );
                 }
                 crate::playback_cache::run_cache_cleanup(&cache_dir, &cleanup_policy);

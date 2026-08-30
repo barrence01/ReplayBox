@@ -34,6 +34,9 @@ export interface Settings {
   preferNvenc: boolean;
   launchOnStartup: boolean;
   playbackCacheMaxGb: number;
+  previewCrf: number;
+  /** Scale denominator: 1 = original, 2 = half, 4 = quarter. */
+  previewScale: number;
 }
 
 export interface TrimRequest {

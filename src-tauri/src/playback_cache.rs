@@ -1,3 +1,4 @@
+use crate::ffmpeg;
 use crate::logging::{append_ffmpeg_log_bytes, flush_ffmpeg_log};
 use crate::playback::PlaybackStrategy;
 use crate::settings::Settings;
@@ -14,8 +15,34 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// Shorter GOP (~250ms @ 60fps) for scrub-friendly transcode previews.
-const SCRUB_PREVIEW_GOP: &str = "15";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewEncodeOptions {
+    pub crf: u8,
+    pub scale: u8,
+    pub use_nvenc: bool,
+    pub profile_key: String,
+}
+
+impl PreviewEncodeOptions {
+    pub fn from_settings(settings: &Settings, ffmpeg_bin: &str) -> Self {
+        let use_nvenc = ffmpeg::encoder_available(ffmpeg_bin, "h264_nvenc");
+        let crf = settings.preview_crf;
+        let scale = settings.preview_scale;
+        let profile_key = preview_profile_key(crf, scale, use_nvenc);
+        Self {
+            crf,
+            scale,
+            use_nvenc,
+            profile_key,
+        }
+    }
+}
+
+pub fn preview_profile_key(crf: u8, scale: u8, use_nvenc: bool) -> String {
+    let encoder = if use_nvenc { "nvenc" } else { "x264" };
+    format!("crf{crf}:s{scale}:30fps:{encoder}")
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct CleanupPolicy {
@@ -39,6 +66,8 @@ struct CacheSidecar {
     source_size: u64,
     strategy: String,
     created_at: String,
+    #[serde(default)]
+    preview_profile: Option<String>,
 }
 
 pub use crate::preview_queue::CacheJobStatus;
@@ -117,6 +146,7 @@ pub fn is_cache_valid(
     recording_id: &str,
     source_path: &Path,
     required_strategy: PlaybackStrategy,
+    encode_opts: Option<&PreviewEncodeOptions>,
 ) -> Option<PathBuf> {
     let cache_path = cache_file_path(cache_dir, recording_id);
     if !cache_path.is_file() {
@@ -132,6 +162,15 @@ pub fn is_cache_valid(
         return None;
     }
 
+    if required_strategy == PlaybackStrategy::Transcode {
+        let Some(opts) = encode_opts else {
+            return None;
+        };
+        if sidecar.preview_profile.as_deref() != Some(opts.profile_key.as_str()) {
+            return None;
+        }
+    }
+
     Some(cache_path)
 }
 
@@ -141,6 +180,7 @@ fn write_sidecar(
     mtime: u64,
     size: u64,
     strategy: PlaybackStrategy,
+    preview_profile: Option<String>,
 ) -> Result<(), String> {
     fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
     let sidecar = CacheSidecar {
@@ -148,6 +188,7 @@ fn write_sidecar(
         source_size: size,
         strategy: strategy_sidecar_name(strategy).to_string(),
         created_at: Utc::now().to_rfc3339(),
+        preview_profile,
     };
     let raw = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
     fs::write(sidecar_path(cache_dir, recording_id), raw).map_err(|e| e.to_string())
@@ -191,6 +232,7 @@ pub(crate) fn run_ffmpeg_cache_job(
     output: &Path,
     strategy: PlaybackStrategy,
     audio_codec: Option<&str>,
+    encode_opts: &PreviewEncodeOptions,
     cancel: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
 ) -> Result<(), String> {
@@ -200,6 +242,7 @@ pub(crate) fn run_ffmpeg_cache_job(
         output,
         strategy,
         audio_codec,
+        encode_opts,
         cancel,
         child_slot,
     )
@@ -211,8 +254,16 @@ pub(crate) fn write_cache_sidecar(
     mtime: u64,
     size: u64,
     strategy: PlaybackStrategy,
+    preview_profile: Option<String>,
 ) -> Result<(), String> {
-    write_sidecar(cache_dir, recording_id, mtime, size, strategy)
+    write_sidecar(
+        cache_dir,
+        recording_id,
+        mtime,
+        size,
+        strategy,
+        preview_profile,
+    )
 }
 
 pub fn cancel_all_cache_jobs(state: &AppState) {
@@ -225,6 +276,7 @@ fn run_ffmpeg_cache(
     output: &Path,
     strategy: PlaybackStrategy,
     audio_codec: Option<&str>,
+    encode_opts: &PreviewEncodeOptions,
     cancel: &AtomicBool,
     child_slot: &Arc<Mutex<Option<Child>>>,
 ) -> Result<(), String> {
@@ -249,26 +301,13 @@ fn run_ffmpeg_cache(
             cmd.args(["-avoid_negative_ts", "make_zero", "-fflags", "+genpts"]);
         }
         PlaybackStrategy::Transcode => {
-            cmd.args([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-crf",
-                "23",
-                "-fps_mode",
-                "cfr",
-                "-r",
-                "60",
-                "-g",
-                SCRUB_PREVIEW_GOP,
-                "-keyint_min",
-                SCRUB_PREVIEW_GOP,
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-            ]);
+            for arg in ffmpeg::preview_transcode_args(
+                encode_opts.crf,
+                encode_opts.scale,
+                encode_opts.use_nvenc,
+            ) {
+                cmd.arg(arg);
+            }
         }
     }
 
@@ -537,9 +576,24 @@ mod tests {
         let id = "rec-1";
         let cache_path = cache_file_path(&cache_dir, id);
         fs::write(&cache_path, b"cached").unwrap();
-        write_sidecar(&cache_dir, id, mtime, size, PlaybackStrategy::RemuxAudio).unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::RemuxAudio,
+            None,
+        )
+        .unwrap();
 
-        assert!(is_cache_valid(&cache_dir, id, &source, PlaybackStrategy::RemuxAudio).is_some());
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::RemuxAudio,
+            None,
+        )
+        .is_some());
     }
 
     #[test]
@@ -554,12 +608,27 @@ mod tests {
 
         let id = "rec-1";
         fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
-        write_sidecar(&cache_dir, id, mtime, size, PlaybackStrategy::RemuxAudio).unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::RemuxAudio,
+            None,
+        )
+        .unwrap();
 
         let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
         file.write_all(b"v2").unwrap();
 
-        assert!(is_cache_valid(&cache_dir, id, &source, PlaybackStrategy::RemuxAudio).is_none());
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::RemuxAudio,
+            None,
+        )
+        .is_none());
     }
 
     #[test]
@@ -574,9 +643,24 @@ mod tests {
 
         let id = "rec-1";
         fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
-        write_sidecar(&cache_dir, id, mtime, size, PlaybackStrategy::RemuxAudio).unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::RemuxAudio,
+            None,
+        )
+        .unwrap();
 
-        assert!(is_cache_valid(&cache_dir, id, &source, PlaybackStrategy::Transcode).is_none());
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::Transcode,
+            None,
+        )
+        .is_none());
     }
 
     #[test]
@@ -592,6 +676,7 @@ mod tests {
             source_size: 1,
             strategy: "remux".into(),
             created_at: "2020-01-01T00:00:00Z".into(),
+            preview_profile: None,
         };
         fs::write(
             sidecar_path(&cache_dir, id),
@@ -624,6 +709,7 @@ mod tests {
                 source_size: 1,
                 strategy: "remux".into(),
                 created_at,
+                preview_profile: None,
             };
             fs::write(
                 sidecar_path(&cache_dir, id),
@@ -684,5 +770,174 @@ mod tests {
         assert_eq!(freed, 1002);
         assert!(!cache_file_path(&cache_dir, "a").exists());
         assert!(!sidecar_path(&cache_dir, "a").exists());
+    }
+
+    #[test]
+    fn preview_profile_key_includes_encoder_scale_and_fps() {
+        assert_eq!(
+            preview_profile_key(28, 2, true),
+            "crf28:s2:30fps:nvenc"
+        );
+        assert_eq!(
+            preview_profile_key(28, 4, false),
+            "crf28:s4:30fps:x264"
+        );
+    }
+
+    #[test]
+    fn transcode_cache_invalid_without_matching_profile() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let source = tmp.path().join("source.mp4");
+        fs::write(&source, b"source-bytes").unwrap();
+        let (mtime, size) = source_metadata(&source).unwrap();
+
+        let id = "rec-1";
+        fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::Transcode,
+            Some("crf28:s2:30fps:x264".into()),
+        )
+        .unwrap();
+
+        let opts = PreviewEncodeOptions {
+            crf: 30,
+            scale: 2,
+            use_nvenc: false,
+            profile_key: preview_profile_key(30, 2, false),
+        };
+
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::Transcode,
+            Some(&opts),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn transcode_cache_invalid_when_scale_differs() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let source = tmp.path().join("source.mp4");
+        fs::write(&source, b"source-bytes").unwrap();
+        let (mtime, size) = source_metadata(&source).unwrap();
+
+        let id = "rec-1";
+        fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::Transcode,
+            Some(preview_profile_key(28, 2, false)),
+        )
+        .unwrap();
+
+        let opts = PreviewEncodeOptions {
+            crf: 28,
+            scale: 4,
+            use_nvenc: false,
+            profile_key: preview_profile_key(28, 4, false),
+        };
+
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::Transcode,
+            Some(&opts),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn transcode_cache_valid_when_profile_matches() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let source = tmp.path().join("source.mp4");
+        fs::write(&source, b"source-bytes").unwrap();
+        let (mtime, size) = source_metadata(&source).unwrap();
+
+        let id = "rec-1";
+        fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
+        let profile = preview_profile_key(28, 2, false);
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::Transcode,
+            Some(profile.clone()),
+        )
+        .unwrap();
+
+        let opts = PreviewEncodeOptions {
+            crf: 28,
+            scale: 2,
+            use_nvenc: false,
+            profile_key: profile,
+        };
+
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::Transcode,
+            Some(&opts),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn legacy_transcode_sidecar_without_profile_is_invalid() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("playback");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let source = tmp.path().join("source.mp4");
+        fs::write(&source, b"source-bytes").unwrap();
+        let (mtime, size) = source_metadata(&source).unwrap();
+
+        let id = "rec-1";
+        fs::write(cache_file_path(&cache_dir, id), b"cached").unwrap();
+        write_sidecar(
+            &cache_dir,
+            id,
+            mtime,
+            size,
+            PlaybackStrategy::Transcode,
+            None,
+        )
+        .unwrap();
+
+        let opts = PreviewEncodeOptions {
+            crf: 28,
+            scale: 2,
+            use_nvenc: false,
+            profile_key: preview_profile_key(28, 2, false),
+        };
+
+        assert!(is_cache_valid(
+            &cache_dir,
+            id,
+            &source,
+            PlaybackStrategy::Transcode,
+            Some(&opts),
+        )
+        .is_none());
     }
 }

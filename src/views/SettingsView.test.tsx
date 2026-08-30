@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../types";
@@ -11,6 +11,7 @@ const getPlaybackCacheLimitsMock = vi.fn();
 const getPlaybackCacheStatsMock = vi.fn();
 const clearPlaybackCacheMock = vi.fn();
 const clearAllCacheMock = vi.fn();
+const nvencAvailableMock = vi.fn();
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
@@ -25,6 +26,7 @@ vi.mock("../lib/api", () => ({
     getPlaybackCacheStatsMock(...args),
   clearPlaybackCache: (...args: unknown[]) => clearPlaybackCacheMock(...args),
   clearAllCache: (...args: unknown[]) => clearAllCacheMock(...args),
+  nvencAvailable: (...args: unknown[]) => nvencAvailableMock(...args),
 }));
 
 const baseSettings: Settings = {
@@ -35,6 +37,8 @@ const baseSettings: Settings = {
   preferNvenc: true,
   launchOnStartup: false,
   playbackCacheMaxGb: 5,
+  previewCrf: 28,
+  previewScale: 2,
 };
 
 const baseLimits = {
@@ -58,7 +62,9 @@ describe("SettingsView watch folder access", () => {
     getPlaybackCacheStatsMock.mockReset();
     clearPlaybackCacheMock.mockReset();
     clearAllCacheMock.mockReset();
+    nvencAvailableMock.mockReset();
     resolvedToolPathsMock.mockResolvedValue(["", ""]);
+    nvencAvailableMock.mockResolvedValue(true);
     getPlaybackCacheLimitsMock.mockResolvedValue(baseLimits);
     getPlaybackCacheStatsMock.mockResolvedValue({
       usedBytes: 2 * 1024 * 1024 * 1024,
@@ -172,7 +178,7 @@ describe("SettingsView watch folder access", () => {
 
     await waitFor(() => {
       expect(screen.getByText("2 GB / 5 GB")).toBeTruthy();
-      expect(screen.getByRole("slider")).toBeTruthy();
+      expect(screen.getByLabelText(/Maximum cache size/i)).toBeTruthy();
     });
   });
 
@@ -194,7 +200,7 @@ describe("SettingsView watch folder access", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("slider")).toBeTruthy();
+      expect(screen.getByLabelText(/Maximum cache size/i)).toBeTruthy();
     });
 
     await user.click(screen.getByRole("button", { name: "Save settings" }));
@@ -228,7 +234,7 @@ describe("SettingsView watch folder access", () => {
       expect(
         screen.getByText(/Preview cache unavailable/i),
       ).toBeTruthy();
-      expect((screen.getByRole("slider") as HTMLInputElement).disabled).toBe(
+      expect((screen.getByLabelText(/Maximum cache size/i) as HTMLInputElement).disabled).toBe(
         true,
       );
     });
@@ -281,5 +287,57 @@ describe("SettingsView watch folder access", () => {
     );
 
     expect(clearPlaybackCacheMock).not.toHaveBeenCalled();
+  });
+
+  it("shows preview settings and nvenc status", async () => {
+    render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Preview quality/i)).toBeTruthy();
+      expect(screen.getByLabelText(/Preview resolution/i)).toBeTruthy();
+      expect(
+        screen.getByText(/NVENC available \(used automatically for preview\)/i),
+      ).toBeTruthy();
+    });
+  });
+
+  it("saves preview settings with other fields", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    checkWatchDirMock.mockResolvedValue(undefined);
+
+    render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={onSave}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Preview quality/i)).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText(/Preview quality/i), {
+      target: { value: "30" },
+    });
+    fireEvent.change(screen.getByLabelText(/Preview resolution/i), {
+      target: { value: "4" },
+    });
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledWith({
+        ...baseSettings,
+        previewCrf: 30,
+        previewScale: 4,
+      });
+    });
   });
 });

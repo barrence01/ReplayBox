@@ -14,7 +14,7 @@
     "build:all": "bash scripts/build-all.sh",
     "build:appimage": "bash scripts/build-appimage.sh",
     "tauri": "tauri",
-    "tauri:dev": "npm run prepare:ffmpeg && tauri dev",
+    "tauri:dev": "bash scripts/check-build-deps.sh --dev && npm run prepare:ffmpeg && tauri dev",
     "tauri:build": "npm run prepare:ffmpeg && tauri build"
   },
   "dependencies": {
