@@ -6,10 +6,8 @@ describe("trayUiState", () => {
     expect(HOME_VIEW).toBe("session");
   });
 
-  it("trayPurgePatch clears catalog and jobs", () => {
+  it("trayPurgePatch clears jobs only", () => {
     expect(trayPurgePatch()).toEqual({
-      libraryReady: false,
-      recordings: [],
       editJobs: [],
       previewJobs: [],
     });

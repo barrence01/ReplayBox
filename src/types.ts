@@ -83,12 +83,12 @@ export interface JobStatus {
 }
 
 export interface CatalogScanStarted {
-  kind: "full" | "folder";
+  kind: "full" | "folder" | "delta";
   folderPath?: string;
 }
 
 export interface CatalogScanFinished {
-  kind: "full" | "folder";
+  kind: "full" | "folder" | "delta";
   folderPath?: string;
   status: "success" | "error";
   count?: number;

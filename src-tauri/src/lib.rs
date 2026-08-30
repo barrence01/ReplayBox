@@ -202,7 +202,7 @@ pub fn run() {
                 let _ = commands::spawn_catalog_scan(
                     handle,
                     state,
-                    commands::ScanKind::Full,
+                    commands::ScanKind::Delta(catalog::DeltaScope::Full),
                 );
             }
 
@@ -223,6 +223,7 @@ pub fn run() {
             commands::resolve_copy_path,
             commands::rescan_library,
             commands::scan_folder,
+            commands::sync_catalog_delta,
             commands::check_tools,
             commands::nvenc_available,
             commands::resolved_tool_paths,

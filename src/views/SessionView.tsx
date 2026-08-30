@@ -8,16 +8,23 @@ import {
 
 interface Props {
   allRecordings: Recording[];
+  nowMs?: number;
+  catalogSyncing?: boolean;
   onOpen: (recording: Recording) => void;
 }
 
-export function SessionView({ allRecordings, onOpen }: Props) {
+export function SessionView({
+  allRecordings,
+  nowMs = Date.now(),
+  catalogSyncing = false,
+  onOpen,
+}: Props) {
   const sessionRecordings = useMemo(
     () =>
       allRecordings.filter((r) =>
-        isWithinLast24Hours(recordingActivityAt(r)),
+        isWithinLast24Hours(recordingActivityAt(r), nowMs),
       ),
-    [allRecordings],
+    [allRecordings, nowMs],
   );
 
   return (
@@ -27,6 +34,11 @@ export function SessionView({ allRecordings, onOpen }: Props) {
           <h1>Session</h1>
           <p>Recordings from the last 24 hours.</p>
         </div>
+        {catalogSyncing ? (
+          <span className="view__refresh-status" aria-live="polite">
+            Updating…
+          </span>
+        ) : null}
       </header>
 
       <RecordingGrid

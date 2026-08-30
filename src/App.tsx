@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCatalogSync } from "./hooks/useCatalogSync";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import {
   cancelJob,
@@ -14,10 +15,13 @@ import {
   listPreviewJobs,
   listRecordings,
   rescanLibrary,
-  scanFolder,
   updateSettings,
 } from "./lib/api";
 import { mergeJob } from "./lib/queueHelpers";
+import {
+  loadRecordingsCache,
+  saveRecordingsCache,
+} from "./lib/recordingsCache";
 import { HOME_VIEW, trayPurgePatch } from "./lib/trayUiState";
 import type {
   CatalogScanFinished,
@@ -54,9 +58,17 @@ function App() {
   const [editJobs, setEditJobs] = useState<JobStatus[]>([]);
   const [previewJobs, setPreviewJobs] = useState<JobStatus[]>([]);
   const [fullScanning, setFullScanning] = useState(false);
+  const [deltaSyncing, setDeltaSyncing] = useState(false);
   const [folderScanningPath, setFolderScanningPath] = useState<string | null>(
     null,
   );
+  const [trayHidden, setTrayHidden] = useState(false);
+  const [sessionNowMs, setSessionNowMs] = useState(() => Date.now());
+
+  const watchDirRef = useRef<string | null>(null);
+  useEffect(() => {
+    watchDirRef.current = settings?.watchDir ?? null;
+  }, [settings?.watchDir]);
 
   const libraryReadyRef = useRef(libraryReady);
   useEffect(() => {
@@ -68,10 +80,19 @@ function App() {
     selectedRef.current = selected;
   }, [selected]);
 
+  const persistRecordings = useCallback((list: Recording[]) => {
+    setRecordings(list);
+    setSessionNowMs(Date.now());
+    const watchDir = watchDirRef.current;
+    if (watchDir) {
+      saveRecordingsCache(watchDir, list);
+    }
+  }, []);
+
   const refreshLibrary = useCallback(async () => {
     const list = await listRecordings();
-    setRecordings(list);
-  }, []);
+    persistRecordings(list);
+  }, [persistRecordings]);
 
   const refreshQueues = useCallback(async () => {
     try {
@@ -83,6 +104,28 @@ function App() {
     }
   }, []);
 
+  const markSyncFinishedRef = useRef<(() => void) | null>(null);
+
+  const { catalogSyncing, syncFromTray, syncFolder, markSyncFinished } =
+    useCatalogSync({
+      view,
+      watchDir: settings?.watchDir ?? null,
+      onRecordings: persistRecordings,
+      deltaSyncing,
+      fullScanning,
+      trayHidden,
+      onPersistCache: (list) => {
+        const watchDir = watchDirRef.current;
+        if (watchDir) {
+          saveRecordingsCache(watchDir, list);
+        }
+      },
+    });
+
+  useEffect(() => {
+    markSyncFinishedRef.current = markSyncFinished;
+  }, [markSyncFinished]);
+
   const goToHome = useCallback(() => {
     setSelected(null);
     setReturnView(HOME_VIEW);
@@ -91,25 +134,19 @@ function App() {
   }, []);
 
   const purgeUiForTray = useCallback(() => {
+    setTrayHidden(true);
     goToHome();
     const patch = trayPurgePatch();
-    setLibraryReady(patch.libraryReady);
-    setRecordings(patch.recordings);
     setEditJobs(patch.editJobs);
     setPreviewJobs(patch.previewJobs);
   }, [goToHome]);
 
-  const hydrateUiFromTray = useCallback(async () => {
-    try {
-      const [list] = await Promise.all([listRecordings(), refreshQueues()]);
-      setRecordings(list);
-      setLibraryReady(true);
-    } catch (e) {
-      setBanner(String(e));
-      setLibraryReady(true);
-    }
+  const hydrateUiFromTray = useCallback(() => {
+    setTrayHidden(false);
     goToHome();
-  }, [goToHome, refreshQueues]);
+    syncFromTray();
+    void refreshQueues();
+  }, [goToHome, refreshQueues, syncFromTray]);
 
   const navigateTo = useCallback((next: ReturnView) => {
     if (next !== "queues") {
@@ -122,17 +159,25 @@ function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [s, t, list] = await Promise.all([
-          getSettings(),
-          checkTools(),
-          listRecordings(),
-        ]);
+        const [s, t] = await Promise.all([getSettings(), checkTools()]);
         if (cancelled) {
           return;
         }
         setSettings(s);
+        watchDirRef.current = s.watchDir;
         setTools({ ffmpeg: t[0], ffprobe: t[1] });
-        setRecordings(list);
+
+        const cached = loadRecordingsCache(s.watchDir);
+        if (cached && cached.length > 0) {
+          setRecordings(cached);
+          setLibraryReady(true);
+        }
+
+        const list = await listRecordings();
+        if (cancelled) {
+          return;
+        }
+        persistRecordings(list);
         setLibraryReady(true);
         await refreshQueues();
       } catch (e) {
@@ -146,7 +191,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [persistRecordings, refreshQueues]);
 
   const catalogDebounceRef = useRef<number | null>(null);
   useEffect(() => {
@@ -182,7 +227,10 @@ function App() {
   useTauriEvent<CatalogScanStarted>("catalog-scan-started", (e) => {
     if (e.payload.kind === "full") {
       setFullScanning(true);
-    } else if (e.payload.folderPath) {
+    } else if (e.payload.kind === "delta") {
+      setDeltaSyncing(true);
+    }
+    if (e.payload.folderPath) {
       setFolderScanningPath(e.payload.folderPath);
     }
   });
@@ -190,7 +238,12 @@ function App() {
   useTauriEvent<CatalogScanFinished>("catalog-scan-finished", (e) => {
     if (e.payload.kind === "full") {
       setFullScanning(false);
-    } else if (e.payload.folderPath) {
+    } else if (e.payload.kind === "delta") {
+      setDeltaSyncing(false);
+      markSyncFinishedRef.current?.();
+      setSessionNowMs(Date.now());
+    }
+    if (e.payload.folderPath) {
       setFolderScanningPath((current) =>
         current === e.payload.folderPath ? null : current,
       );
@@ -217,7 +270,7 @@ function App() {
   });
 
   useTauriEvent("app-from-tray", () => {
-    void hydrateUiFromTray();
+    hydrateUiFromTray();
   });
 
   useEffect(() => {
@@ -319,6 +372,7 @@ function App() {
             watchDir={settings.watchDir}
             recordings={recordings}
             libraryReady={libraryReady}
+            catalogSyncing={catalogSyncing}
             onOpen={openRecording}
             fullScanning={fullScanning}
             folderScanningPath={folderScanningPath}
@@ -329,12 +383,8 @@ function App() {
                 setBanner(String(e));
               }
             }}
-            onScanFolder={async (folderPath) => {
-              try {
-                await scanFolder(folderPath);
-              } catch (e) {
-                setBanner(String(e));
-              }
+            onScanFolder={(folderPath) => {
+              syncFolder(folderPath);
             }}
           />
         )}
@@ -342,7 +392,12 @@ function App() {
           <p className="empty-state">Loading library…</p>
         )}
         {view === "session" && (
-          <SessionView allRecordings={recordings} onOpen={openRecording} />
+          <SessionView
+            allRecordings={recordings}
+            nowMs={sessionNowMs}
+            catalogSyncing={catalogSyncing}
+            onOpen={openRecording}
+          />
         )}
         {view === "queues" && (
           <QueuesView
@@ -442,6 +497,7 @@ function App() {
             onSave={async (next) => {
               const saved = await updateSettings(next);
               setSettings(saved);
+              watchDirRef.current = saved.watchDir;
               const t = await checkTools();
               setTools({ ffmpeg: t[0], ffprobe: t[1] });
             }}

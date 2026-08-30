@@ -36,6 +36,7 @@ pub struct PlaybackCacheClearResult {
 pub enum ScanKind {
     Full,
     Folder(String),
+    Delta(catalog::DeltaScope),
 }
 
 fn resolved_settings(state: &AppState) -> Result<Settings, String> {
@@ -67,20 +68,27 @@ pub fn spawn_catalog_scan(
     let (event_kind, folder_path) = match &kind {
         ScanKind::Full => ("full".to_string(), None),
         ScanKind::Folder(path) => ("folder".to_string(), Some(path.clone())),
+        ScanKind::Delta(scope) => (
+            "delta".to_string(),
+            match scope {
+                catalog::DeltaScope::Folder { folder_path } => Some(folder_path.clone()),
+                _ => None,
+            },
+        ),
     };
 
     {
         let mut scan = state.scan_state.lock();
         match &kind {
             ScanKind::Full => {
-                if scan.full {
+                if scan.full || scan.delta {
                     return Err("A library scan is already in progress".into());
                 }
                 scan.full = true;
             }
             ScanKind::Folder(path) => {
-                if scan.full {
-                    tracing::debug!(folder = %path, "ignoring folder scan during full rescan");
+                if scan.full || scan.delta {
+                    tracing::debug!(folder = %path, "ignoring folder scan during catalog sync");
                     return Ok(());
                 }
                 let key = catalog::normalize_dir(path);
@@ -88,6 +96,27 @@ pub fn spawn_catalog_scan(
                     return Ok(());
                 }
                 scan.folders.insert(key);
+            }
+            ScanKind::Delta(scope) => {
+                if scan.full {
+                    tracing::debug!("ignoring delta sync during full rescan");
+                    return Ok(());
+                }
+                match scope {
+                    catalog::DeltaScope::Folder { folder_path } => {
+                        let key = catalog::normalize_dir(folder_path);
+                        if scan.folders.contains(&key) {
+                            return Ok(());
+                        }
+                        scan.folders.insert(key);
+                    }
+                    _ => {
+                        if scan.delta {
+                            return Ok(());
+                        }
+                        scan.delta = true;
+                    }
+                }
             }
         }
     }
@@ -102,6 +131,7 @@ pub fn spawn_catalog_scan(
         let result = match &kind {
             ScanKind::Full => catalog::scan_library(&state, &settings),
             ScanKind::Folder(path) => catalog::scan_folder(&state, &settings, path),
+            ScanKind::Delta(scope) => catalog::scan_library_delta(&state, &settings, scope.clone()),
         };
 
         {
@@ -111,6 +141,12 @@ pub fn spawn_catalog_scan(
                 ScanKind::Folder(path) => {
                     scan.folders.remove(&catalog::normalize_dir(path));
                 }
+                ScanKind::Delta(scope) => match scope {
+                    catalog::DeltaScope::Folder { folder_path } => {
+                        scan.folders.remove(&catalog::normalize_dir(folder_path));
+                    }
+                    _ => scan.delta = false,
+                },
             }
         }
 
@@ -414,6 +450,15 @@ pub fn scan_folder(
         state.inner().clone(),
         ScanKind::Folder(folder_path),
     )
+}
+
+#[tauri::command]
+pub fn sync_catalog_delta(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    scope: catalog::DeltaScope,
+) -> Result<(), String> {
+    spawn_catalog_scan(app, state.inner().clone(), ScanKind::Delta(scope))
 }
 
 #[tauri::command]

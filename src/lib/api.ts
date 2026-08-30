@@ -81,6 +81,15 @@ export function rescanLibrary() {
   return invoke<void>("rescan_library");
 }
 
+export type DeltaScope =
+  | { kind: "full" }
+  | { kind: "last24h" }
+  | { kind: "folder"; folderPath: string };
+
+export function syncCatalogDelta(scope: DeltaScope) {
+  return invoke<void>("sync_catalog_delta", { scope });
+}
+
 export function scanFolder(folderPath: string) {
   return invoke<void>("scan_folder", { folderPath });
 }

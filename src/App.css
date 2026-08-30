@@ -484,6 +484,14 @@ select {
   margin: 0;
 }
 
+.view__refresh-status {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .view__actions {
   display: flex;
   gap: 0.6rem;

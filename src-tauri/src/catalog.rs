@@ -4,13 +4,27 @@ use crate::models::Recording;
 use crate::settings::{AppPaths, Settings};
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "m4v", "ts"];
+const SESSION_WINDOW_SECS: u64 = 24 * 60 * 60;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DeltaScope {
+    Full,
+    Last24h,
+    Folder {
+        #[serde(rename = "folderPath")]
+        folder_path: String,
+    },
+}
 
 pub fn is_video_file(path: &Path) -> bool {
     path.extension()
@@ -185,12 +199,50 @@ pub fn index_file(
     Ok(rec)
 }
 
+fn file_modified_since(path: &Path, since: SystemTime) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| t >= since)
+        .unwrap_or(true)
+}
+
+fn session_cutoff() -> SystemTime {
+    SystemTime::now()
+        .checked_sub(Duration::from_secs(SESSION_WINDOW_SECS))
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
 fn collect_video_paths(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_file() && is_video_file(e.path()))
         .map(|e| e.path().to_path_buf())
+        .collect()
+}
+
+pub fn collect_video_paths_since(root: &Path, since: SystemTime) -> Vec<PathBuf> {
+    WalkDir::new(root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().is_file()
+                && is_video_file(e.path())
+                && file_modified_since(e.path(), since)
+        })
+        .map(|e| e.path().to_path_buf())
+        .collect()
+}
+
+fn paths_to_seen(paths: &[PathBuf]) -> HashSet<String> {
+    paths
+        .iter()
+        .map(|path| {
+            path.canonicalize()
+                .unwrap_or_else(|_| path.clone())
+                .to_string_lossy()
+                .to_string()
+        })
         .collect()
 }
 
@@ -224,6 +276,107 @@ pub fn scan_library(state: &AppState, settings: &Settings) -> Result<usize, Stri
     let conn = state.db.lock();
     prune_missing(&conn, &state.paths)?;
     Ok(count)
+}
+
+fn prune_by_seen_paths(
+    conn: &rusqlite::Connection,
+    paths: &AppPaths,
+    seen: &HashSet<String>,
+    scope: &DeltaScope,
+    watch_dir: &str,
+) -> Result<(), String> {
+    match scope {
+        DeltaScope::Last24h => Ok(()),
+        DeltaScope::Full => {
+            let watch_root = normalize_dir(watch_dir);
+            let recordings = db::list_recordings(conn, None)?;
+            for rec in recordings {
+                if seen.contains(&rec.path) {
+                    continue;
+                }
+                let rec_dir = normalize_dir(&rec.dir);
+                let under_watch = rec_dir == watch_root
+                    || rec_dir.starts_with(&format!("{watch_root}/"));
+                if under_watch {
+                    remove_stale_recording(conn, paths, &rec)?;
+                }
+            }
+            Ok(())
+        }
+        DeltaScope::Folder { folder_path } => {
+            let prefix = normalize_dir(folder_path);
+            let recordings = db::list_recordings_under_dir(conn, &prefix)?;
+            for rec in recordings {
+                if !seen.contains(&rec.path) {
+                    remove_stale_recording(conn, paths, &rec)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Incremental catalog sync scoped to recent files, full library, or one folder.
+pub fn scan_library_delta(
+    state: &AppState,
+    settings: &Settings,
+    scope: DeltaScope,
+) -> Result<usize, String> {
+    match scope {
+        DeltaScope::Full => {
+            let root = PathBuf::from(&settings.watch_dir);
+            if !root.exists() {
+                let conn = state.db.lock();
+                prune_missing(&conn, &state.paths)?;
+                return Ok(0);
+            }
+
+            let paths = collect_video_paths(&root);
+            let seen = paths_to_seen(&paths);
+            let count = index_paths(state, settings, &paths)?;
+            let conn = state.db.lock();
+            prune_by_seen_paths(
+                &conn,
+                &state.paths,
+                &seen,
+                &DeltaScope::Full,
+                &settings.watch_dir,
+            )?;
+            Ok(count)
+        }
+        DeltaScope::Last24h => {
+            let root = PathBuf::from(&settings.watch_dir);
+            if !root.exists() {
+                return Ok(0);
+            }
+
+            let paths = collect_video_paths_since(&root, session_cutoff());
+            index_paths(state, settings, &paths)
+        }
+        DeltaScope::Folder { ref folder_path } => {
+            let folder = resolve_folder_in_watch_dir(&settings.watch_dir, folder_path)?;
+            if !folder.exists() {
+                let conn = state.db.lock();
+                prune_missing_in_folder(&conn, &state.paths, &folder)?;
+                return Ok(0);
+            }
+
+            let paths = collect_video_paths(&folder);
+            let seen = paths_to_seen(&paths);
+            let count = index_paths(state, settings, &paths)?;
+            let conn = state.db.lock();
+            prune_by_seen_paths(
+                &conn,
+                &state.paths,
+                &seen,
+                &DeltaScope::Folder {
+                    folder_path: folder_path.clone(),
+                },
+                &settings.watch_dir,
+            )?;
+            Ok(count)
+        }
+    }
 }
 
 /// Scan a single folder subtree under the watch directory.
@@ -294,6 +447,7 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::models::Recording;
+    use std::collections::HashSet;
     use std::path::PathBuf;
 
     #[test]
@@ -415,6 +569,85 @@ mod tests {
         assert_eq!(rec.dir, "/videos");
         assert_eq!(rec.duration_ms, Some(1500.0));
         assert!(rec.is_vfr);
+    }
+
+    #[test]
+    fn collect_video_paths_since_includes_recent_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.mp4");
+        std::fs::write(&clip, b"x").unwrap();
+        let paths = collect_video_paths_since(dir.path(), SystemTime::UNIX_EPOCH);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().and_then(|n| n.to_str()), Some("clip.mp4"));
+    }
+
+    #[test]
+    fn prune_by_seen_paths_removes_missing_full_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_db(&dir.path().join("test.db")).unwrap();
+        let paths = crate::settings::AppPaths {
+            config_dir: dir.path().join("config"),
+            data_dir: dir.path().join("data"),
+            log_dir: dir.path().join("log"),
+            cache_dir: dir.path().join("cache"),
+        };
+
+        let kept = Recording {
+            id: "keep".into(),
+            path: "/watch/GameA/keep.mp4".into(),
+            filename: "keep.mp4".into(),
+            dir: "/watch/GameA".into(),
+            size_bytes: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            video_codec: None,
+            audio_codec: None,
+            is_vfr: false,
+            created_at: None,
+            modified_at: None,
+            thumbnail_path: None,
+            session_id: None,
+            indexed_at: "2024-01-01T00:00:00Z".into(),
+        };
+        let gone = Recording {
+            id: "gone".into(),
+            path: "/watch/GameA/gone.mp4".into(),
+            filename: "gone.mp4".into(),
+            dir: "/watch/GameA".into(),
+            size_bytes: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            video_codec: None,
+            audio_codec: None,
+            is_vfr: false,
+            created_at: None,
+            modified_at: None,
+            thumbnail_path: None,
+            session_id: None,
+            indexed_at: "2024-01-01T00:00:00Z".into(),
+        };
+        db::upsert_recording(&conn, &kept).unwrap();
+        db::upsert_recording(&conn, &gone).unwrap();
+
+        let mut seen = HashSet::new();
+        seen.insert("/watch/GameA/keep.mp4".to_string());
+        prune_by_seen_paths(
+            &conn,
+            &paths,
+            &seen,
+            &DeltaScope::Full,
+            "/watch",
+        )
+        .unwrap();
+
+        assert!(db::get_recording_by_path(&conn, "/watch/GameA/keep.mp4")
+            .unwrap()
+            .is_some());
+        assert!(db::get_recording_by_path(&conn, "/watch/GameA/gone.mp4")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

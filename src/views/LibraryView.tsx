@@ -17,9 +17,10 @@ interface Props {
   watchDir: string;
   recordings: Recording[];
   libraryReady: boolean;
+  catalogSyncing?: boolean;
   onOpen: (recording: Recording) => void;
   onRescan: () => Promise<void>;
-  onScanFolder: (folderPath: string) => Promise<void>;
+  onScanFolder: (folderPath: string) => void;
   fullScanning: boolean;
   folderScanningPath: string | null;
 }
@@ -28,6 +29,7 @@ export function LibraryView({
   watchDir,
   recordings,
   libraryReady,
+  catalogSyncing = false,
   onOpen,
   onRescan,
   onScanFolder,
@@ -121,6 +123,11 @@ export function LibraryView({
           </p>
         </div>
         <div className="view__actions">
+          {catalogSyncing && !selectedFolder ? (
+            <span className="view__refresh-status" aria-live="polite">
+              Updating…
+            </span>
+          ) : null}
           <label className="sort-select">
             <span className="sr-only">Sort order</span>
             <select
@@ -166,7 +173,7 @@ export function LibraryView({
                 onOpen={(f) => {
                   setSelectedFolder(f);
                   setQuery("");
-                  void onScanFolder(f.path);
+                  onScanFolder(f.path);
                 }}
               />
             ))}

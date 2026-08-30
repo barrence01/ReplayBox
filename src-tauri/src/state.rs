@@ -13,6 +13,7 @@ use std::sync::Arc;
 #[derive(Debug, Default)]
 pub struct ScanState {
     pub full: bool,
+    pub delta: bool,
     pub folders: HashSet<String>,
 }
 
