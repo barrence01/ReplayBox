@@ -487,7 +487,6 @@ describe("EditorView timeline wiring", () => {
           outputMode: "copy",
           crf: 26,
           useNvenc: false,
-          fps: 60,
         }),
       );
     });
@@ -535,7 +534,6 @@ describe("EditorView timeline wiring", () => {
           trimMode: "precise",
           crf: 26,
           useNvenc: true,
-          fps: 60,
         }),
       );
     });

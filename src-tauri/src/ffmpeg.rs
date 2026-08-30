@@ -174,14 +174,13 @@ pub fn trim(
     trim_mode: &str,
     crf: u8,
     use_nvenc: bool,
-    fps: u8,
     child_slot: Option<Arc<Mutex<Option<u32>>>>,
     on_progress: Option<ProgressFn>,
 ) -> Result<(), String> {
     let duration_secs = (end_secs - start_secs).max(0.001);
     let args = if trim_mode == "precise" {
         let nvenc = use_nvenc && encoder_available(ffmpeg, "h264_nvenc");
-        trim_precise_ffmpeg_args(input, output, start_secs, end_secs, crf, nvenc, fps)?
+        trim_precise_ffmpeg_args(input, output, start_secs, end_secs, crf, nvenc)?
     } else {
         trim_ffmpeg_args(input, output, start_secs, end_secs)?
     };
@@ -224,12 +223,10 @@ fn trim_precise_ffmpeg_args(
     end_secs: f64,
     crf: u8,
     use_nvenc: bool,
-    fps: u8,
 ) -> Result<Vec<String>, String> {
     let start = format!("{start_secs:.3}");
     let end = format!("{end_secs:.3}");
     let crf_s = crf.to_string();
-    let fps_s = fps.to_string();
     let mut args = vec![
         "-y".into(),
         "-i".into(),
@@ -238,6 +235,8 @@ fn trim_precise_ffmpeg_args(
         start,
         "-to".into(),
         end,
+        "-fps_mode".into(),
+        "passthrough".into(),
     ];
 
     if use_nvenc {
@@ -248,8 +247,6 @@ fn trim_precise_ffmpeg_args(
             crf_s,
             "-preset".into(),
             "p4".into(),
-            "-r".into(),
-            fps_s,
             "-c:a".into(),
             "aac".into(),
             "-b:a".into(),
@@ -263,8 +260,6 @@ fn trim_precise_ffmpeg_args(
             crf_s,
             "-preset".into(),
             "medium".into(),
-            "-r".into(),
-            fps_s,
             "-c:a".into(),
             "aac".into(),
             "-b:a".into(),
@@ -713,8 +708,7 @@ mod tests {
     fn trim_precise_ffmpeg_args_seeks_after_input_and_encodes() {
         let input = Path::new("/tmp/video_original.mp4");
         let output = Path::new("/tmp/clip_precise.mp4");
-        let args =
-            trim_precise_ffmpeg_args(input, output, 12.0, 45.0, 26, false, 60).unwrap();
+        let args = trim_precise_ffmpeg_args(input, output, 12.0, 45.0, 26, false).unwrap();
 
         assert_eq!(args[0], "-y");
         assert_eq!(args[1], "-i");
@@ -723,10 +717,11 @@ mod tests {
         assert_eq!(args[4], "12.000");
         assert_eq!(args[5], "-to");
         assert_eq!(args[6], "45.000");
+        assert!(args.contains(&"-fps_mode".to_string()));
+        assert!(args.contains(&"passthrough".to_string()));
         assert!(args.contains(&"-c:v".to_string()));
         assert!(args.contains(&"libx264".to_string()));
-        assert!(args.contains(&"-r".to_string()));
-        assert!(args.contains(&"60".to_string()));
+        assert!(!args.contains(&"-r".to_string()));
         assert!(
             !args
                 .windows(2)

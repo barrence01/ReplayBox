@@ -143,7 +143,7 @@ export function EditorView({
   const trimModeTips: Record<TrimMode, string> = {
     fast: "Cuts quickly without re-encoding. Fast, but the start may be a little off or show a brief frozen image.",
     precise:
-      "Re-encodes so the cut matches the timeline. Slower, and uses your Output quality and FPS settings.",
+      "Re-encodes for frame-accurate cuts. Preserves source frame timing (VFR-safe). Slower.",
   };
 
   const rootRef = useRef<HTMLElement>(null);
@@ -281,7 +281,6 @@ export function EditorView({
         trimMode,
         crf,
         useNvenc: preferNvenc,
-        fps,
       });
       onJobStarted(status);
     } catch (e) {
@@ -569,6 +568,10 @@ export function EditorView({
                 Replace original
               </label>
             </fieldset>
+          </div>
+
+          <div className="editor__job-options">
+            <h2>Compress</h2>
             <label className="stack-label editor__fps">
               Output FPS
               <select
@@ -579,10 +582,6 @@ export function EditorView({
                 <option value={30}>30</option>
               </select>
             </label>
-          </div>
-
-          <div className="editor__job-options">
-            <h2>Compress</h2>
             <label className="stack-label">
               CRF / quality ({crf})
               <input
