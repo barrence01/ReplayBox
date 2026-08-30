@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRequestGeneration } from "../hooks/useRequestGeneration";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 import {
@@ -7,6 +8,7 @@ import {
   clearPlaybackCache,
   getPlaybackCacheLimits,
   getPlaybackCacheStats,
+  nvencAvailable,
   resolvedToolPaths,
   type PlaybackCacheLimits,
   type PlaybackCacheStats,
@@ -35,32 +37,56 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
+  const [nvencReady, setNvencReady] = useState<boolean | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const cacheClampAppliedRef = useRef(false);
+  const cacheInfoGen = useRequestGeneration();
+  const toolsProbeGen = useRequestGeneration();
+  const { nextGeneration: nextCacheGen, isCurrent: isCacheCurrent, invalidate: invalidateCacheGen } =
+    cacheInfoGen;
+  const {
+    nextGeneration: nextToolsGen,
+    isCurrent: isToolsCurrent,
+    invalidate: invalidateToolsGen,
+  } = toolsProbeGen;
 
   const refreshCacheInfo = useCallback(async () => {
+    const gen = nextCacheGen();
     const [nextLimits, nextStats] = await Promise.all([
       getPlaybackCacheLimits(),
       getPlaybackCacheStats(),
     ]);
+    if (!isCacheCurrent(gen)) {
+      return { nextLimits, nextStats };
+    }
     setLimits(nextLimits);
     setStats(nextStats);
     return { nextLimits, nextStats };
-  }, []);
+  }, [nextCacheGen, isCacheCurrent]);
 
   useEffect(() => {
     setDraft(settings);
   }, [settings]);
 
   useEffect(() => {
+    const gen = nextCacheGen();
     refreshCacheInfo().catch(() => {
+      if (!isCacheCurrent(gen)) {
+        return;
+      }
       setLimits(null);
       setStats(null);
     });
-  }, [refreshCacheInfo, settings.playbackCacheMaxGb]);
+    return () => {
+      invalidateCacheGen();
+    };
+  }, [refreshCacheInfo, settings.playbackCacheMaxGb, nextCacheGen, isCacheCurrent, invalidateCacheGen]);
 
   useEffect(() => {
-    if (!limits) {
+    if (!limits || cacheClampAppliedRef.current) {
       return;
     }
+    cacheClampAppliedRef.current = true;
     setDraft((current) => ({
       ...current,
       playbackCacheMaxGb: clampCacheGb(current.playbackCacheMaxGb, limits),
@@ -68,28 +94,71 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   }, [limits]);
 
   useEffect(() => {
+    const gen = nextToolsGen();
     resolvedToolPaths()
-      .then(([ffmpeg, ffprobe]) => setResolved({ ffmpeg, ffprobe }))
-      .catch(() => setResolved({ ffmpeg: "", ffprobe: "" }));
-  }, [settings, tools]);
+      .then(([ffmpeg, ffprobe]) => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setResolved({ ffmpeg, ffprobe });
+      })
+      .catch(() => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setResolved({ ffmpeg: "", ffprobe: "" });
+      });
+    nvencAvailable()
+      .then((ready) => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setNvencReady(ready);
+      })
+      .catch(() => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setNvencReady(null);
+      });
+    return () => {
+      invalidateToolsGen();
+    };
+  }, [
+    settings.ffmpegPath,
+    settings.ffprobePath,
+    settings.preferNvenc,
+    tools,
+    nextToolsGen,
+    isToolsCurrent,
+    invalidateToolsGen,
+  ]);
 
   async function pickWatchDir() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Select recordings folder",
-    });
-    if (typeof selected !== "string") {
+    if (browsing) {
       return;
     }
+    setBrowsing(true);
     try {
-      await checkWatchDir(selected);
-      setDraft((d) => ({ ...d, watchDir: selected }));
-      setMessage(null);
-      setMessageIsError(false);
-    } catch (e) {
-      setMessage(String(e));
-      setMessageIsError(true);
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select recordings folder",
+      });
+      if (typeof selected !== "string") {
+        return;
+      }
+      try {
+        await checkWatchDir(selected);
+        setDraft((d) => ({ ...d, watchDir: selected }));
+        setMessage(null);
+        setMessageIsError(false);
+      } catch (e) {
+        setMessage(String(e));
+        setMessageIsError(true);
+      }
+    } finally {
+      setBrowsing(false);
     }
   }
 
@@ -121,6 +190,19 @@ export function SettingsView({ settings, tools, onSave }: Props) {
 
     if (!limits.enabled && cacheGb !== 0) {
       setMessage("Preview cache is unavailable due to insufficient disk space.");
+      setMessageIsError(true);
+      return;
+    }
+
+    if (draft.previewCrf < 18 || draft.previewCrf > 35) {
+      setMessage("Preview CRF must be between 18 and 35.");
+      setMessageIsError(true);
+      return;
+    }
+
+    const allowedScales = [1, 2, 4];
+    if (!allowedScales.includes(draft.previewScale)) {
+      setMessage("Preview scale must be Original, 1/2, or 1/4.");
       setMessageIsError(true);
       return;
     }
@@ -220,7 +302,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
                   setDraft((d) => ({ ...d, watchDir: e.target.value }))
                 }
               />
-              <button type="button" onClick={pickWatchDir}>
+              <button type="button" onClick={() => void pickWatchDir()} disabled={browsing}>
                 Browse…
               </button>
             </div>
@@ -283,6 +365,66 @@ export function SettingsView({ settings, tools, onSave }: Props) {
         </section>
 
         <section className="settings-section">
+          <h2>Preview</h2>
+          <label className="settings-field" htmlFor="preview-crf">
+            Preview quality (CRF {draft.previewCrf})
+            <input
+              id="preview-crf"
+              type="range"
+              min={18}
+              max={35}
+              step={1}
+              value={draft.previewCrf}
+              disabled={cacheBusy}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  previewCrf: Number(e.target.value),
+                }))
+              }
+            />
+            <span className="settings-field-meta hint">
+              Higher values use less bitrate (lower visual quality). Speed is
+              mostly set by resolution and 30 fps encode.
+            </span>
+          </label>
+
+          <label className="settings-field" htmlFor="preview-scale">
+            Preview resolution
+            <select
+              id="preview-scale"
+              value={draft.previewScale}
+              disabled={cacheBusy}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  previewScale: Number(e.target.value),
+                }))
+              }
+            >
+              <option value={1}>Original</option>
+              <option value={2}>1/2</option>
+              <option value={4}>1/4</option>
+            </select>
+            <span className="settings-field-meta hint">
+              Relative to the source. Previews encode at 30 fps for faster
+              preparation.
+            </span>
+          </label>
+
+          <p className="settings-field-meta">
+            Hardware encoding:{" "}
+            <span className={nvencReady ? "ok" : nvencReady === false ? "error" : ""}>
+              {nvencReady == null
+                ? "Checking…"
+                : nvencReady
+                  ? "NVENC available (used automatically for preview)"
+                  : "NVENC unavailable (software encoding fallback)"}
+            </span>
+          </p>
+        </section>
+
+        <section className="settings-section">
           <h2>Preview cache</h2>
           <p className="settings-cache-usage">{usageLabel}</p>
           {limits && !limits.enabled && (
@@ -290,9 +432,10 @@ export function SettingsView({ settings, tools, onSave }: Props) {
               Preview cache unavailable — less than 1 GB free on this disk.
             </p>
           )}
-          <label className="settings-field">
+          <label className="settings-field" htmlFor="playback-cache-max-gb">
             Maximum cache size ({draft.playbackCacheMaxGb} GB)
             <input
+              id="playback-cache-max-gb"
               type="range"
               min={1}
               max={limits?.maxGb ?? 1}

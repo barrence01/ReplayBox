@@ -23,6 +23,10 @@ pub struct Recording {
     pub indexed_at: String,
 }
 
+fn default_trim_mode() -> String {
+    "fast".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrimRequest {
@@ -30,12 +34,15 @@ pub struct TrimRequest {
     /// Trim start in milliseconds (timeline uses PTS/time, not frames).
     pub start_ms: f64,
     pub end_ms: f64,
-    /// `precise` re-encodes (VFR-safe); `fast` uses stream copy (may cut on keyframe).
-    pub mode: String,
     /// `copy` writes a new file; `replace` atomically replaces the original.
     pub output_mode: String,
     /// When copy dest exists: `overwrite` or `unique` (numbered sibling).
     pub copy_collision: Option<String>,
+    /// `fast` stream copy or `precise` re-encode.
+    #[serde(default = "default_trim_mode")]
+    pub trim_mode: String,
+    pub crf: Option<u8>,
+    pub use_nvenc: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

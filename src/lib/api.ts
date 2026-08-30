@@ -81,6 +81,15 @@ export function rescanLibrary() {
   return invoke<void>("rescan_library");
 }
 
+export type DeltaScope =
+  | { kind: "full" }
+  | { kind: "last24h" }
+  | { kind: "folder"; folderPath: string };
+
+export function syncCatalogDelta(scope: DeltaScope) {
+  return invoke<void>("sync_catalog_delta", { scope });
+}
+
 export function scanFolder(folderPath: string) {
   return invoke<void>("scan_folder", { folderPath });
 }
@@ -133,6 +142,10 @@ export function cancelPreviewJob(jobId: string) {
 
 export function cancelPreviewForRecording(recordingId: string) {
   return invoke<void>("cancel_preview_for_recording", { recordingId });
+}
+
+export function prioritizePreviewForRecording(recordingId: string) {
+  return invoke<JobStatus>("prioritize_preview_for_recording", { recordingId });
 }
 
 export function getJobsPaused() {

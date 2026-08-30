@@ -55,6 +55,18 @@ pub fn default_playback_cache_max_gb() -> u32 {
     DEFAULT_PLAYBACK_CACHE_MAX_GB
 }
 
+pub fn default_preview_crf() -> u8 {
+    28
+}
+
+/// Preview scale denominator: 1 = original, 2 = half, 4 = quarter.
+pub fn default_preview_scale() -> u8 {
+    2
+}
+
+/// Allowed scale denominators for preview downscale.
+pub const PREVIEW_SCALE_OPTIONS: &[u8] = &[1, 2, 4];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -67,6 +79,10 @@ pub struct Settings {
     pub launch_on_startup: bool,
     #[serde(default = "default_playback_cache_max_gb")]
     pub playback_cache_max_gb: u32,
+    #[serde(default = "default_preview_crf")]
+    pub preview_crf: u8,
+    #[serde(default = "default_preview_scale")]
+    pub preview_scale: u8,
 }
 
 impl Default for Settings {
@@ -79,6 +95,8 @@ impl Default for Settings {
             prefer_nvenc: true,
             launch_on_startup: false,
             playback_cache_max_gb: DEFAULT_PLAYBACK_CACHE_MAX_GB,
+            preview_crf: default_preview_crf(),
+            preview_scale: default_preview_scale(),
         }
     }
 }
@@ -123,6 +141,17 @@ pub fn validate_watch_dir(path: &str) -> Result<(), String> {
         format!("Watch folder is not accessible: {trimmed} ({e})")
     })?;
 
+    Ok(())
+}
+
+/// Preview encode settings must stay within supported ranges.
+pub fn validate_preview_settings(settings: &Settings) -> Result<(), String> {
+    if !(18..=35).contains(&settings.preview_crf) {
+        return Err("Preview CRF must be between 18 and 35.".into());
+    }
+    if !PREVIEW_SCALE_OPTIONS.contains(&settings.preview_scale) {
+        return Err("Preview scale must be Original (1), 1/2, or 1/4.".into());
+    }
     Ok(())
 }
 
@@ -217,6 +246,8 @@ mod tests {
         settings.prefer_nvenc = false;
         settings.launch_on_startup = true;
         settings.playback_cache_max_gb = 10;
+        settings.preview_crf = 30;
+        settings.preview_scale = 4;
         settings.save(&path).unwrap();
         let loaded = Settings::load(&path);
         assert_eq!(loaded.watch_dir, "/tmp/recordings");
@@ -224,6 +255,81 @@ mod tests {
         assert!(!loaded.prefer_nvenc);
         assert!(loaded.launch_on_startup);
         assert_eq!(loaded.playback_cache_max_gb, 10);
+        assert_eq!(loaded.preview_crf, 30);
+        assert_eq!(loaded.preview_scale, 4);
+    }
+
+    #[test]
+    fn default_preview_settings() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.preview_crf, 28);
+        assert_eq!(defaults.preview_scale, 2);
+    }
+
+    #[test]
+    fn load_legacy_json_defaults_preview_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+              "watchDir": "/videos",
+              "ffmpegPath": "",
+              "ffprobePath": "",
+              "compressCrf": 26,
+              "preferNvenc": true,
+              "gameProcessNames": ["cs2"],
+              "backgroundServiceEnabled": true
+            }"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.preview_crf, 28);
+        assert_eq!(loaded.preview_scale, 2);
+    }
+
+    #[test]
+    fn load_legacy_preview_max_width_defaults_scale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+              "watchDir": "/videos",
+              "ffmpegPath": "",
+              "ffprobePath": "",
+              "compressCrf": 26,
+              "preferNvenc": true,
+              "launchOnStartup": false,
+              "playbackCacheMaxGb": 5,
+              "previewCrf": 28,
+              "previewMaxWidth": 1280
+            }"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.preview_crf, 28);
+        assert_eq!(loaded.preview_scale, 2);
+    }
+
+    #[test]
+    fn validate_preview_settings_rejects_out_of_range() {
+        let mut settings = Settings::default();
+        settings.preview_crf = 17;
+        assert!(validate_preview_settings(&settings).is_err());
+        settings.preview_crf = 36;
+        assert!(validate_preview_settings(&settings).is_err());
+        settings.preview_crf = 28;
+        settings.preview_scale = 3;
+        assert!(validate_preview_settings(&settings).is_err());
+        settings.preview_scale = 0;
+        assert!(validate_preview_settings(&settings).is_err());
+        settings.preview_scale = 2;
+        assert!(validate_preview_settings(&settings).is_ok());
+        settings.preview_scale = 1;
+        assert!(validate_preview_settings(&settings).is_ok());
+        settings.preview_scale = 4;
+        assert!(validate_preview_settings(&settings).is_ok());
     }
 
     #[test]

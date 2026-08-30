@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { getPlaybackInfo } from "../lib/api";
+import { getPlaybackInfo, prioritizePreviewForRecording } from "../lib/api";
 import { formatElapsed } from "../lib/queueHelpers";
 import type { PlaybackInfo } from "../types";
 import { isPlayInterruptedError } from "../lib/videoPlayback";
@@ -55,6 +55,7 @@ const PREPARING_TIMEOUT_MS = 120_000;
 const PREPARING_POLL_MS = 500;
 const PREPARING_ELAPSED_TICK_MS = 1000;
 const SCRUB_SEEK_FALLBACK_MS = 100;
+const SEEKED_WAIT_TIMEOUT_MS = 3_000;
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
   function VideoPlayer(
@@ -72,6 +73,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     ref,
   ) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const recordingIdRef = useRef(recordingId);
+    recordingIdRef.current = recordingId;
+    const loadCancelledRef = useRef(false);
     const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
       const prev = videoRef.current;
       videoRef.current = node;
@@ -127,6 +131,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     const [loading, setLoading] = useState(true);
     const [preparing, setPreparing] = useState(false);
     const [preparingStatusText, setPreparingStatusText] = useState("");
+    const [canProcessNext, setCanProcessNext] = useState(false);
     const [seekingUi, setSeekingUi] = useState(false);
 
     function clearLoadTimeout() {
@@ -159,6 +164,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         queuePosition: null,
       };
       setPreparingStatusText("");
+      setCanProcessNext(false);
     }
 
     function preparingAnchorIso(meta: {
@@ -203,6 +209,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         startedAt: info.startedAt ?? null,
         queuePosition: info.queuePosition ?? null,
       };
+      const status = preparingMetaRef.current.queueStatus;
+      const position = preparingMetaRef.current.queuePosition;
+      setCanProcessNext(status === "queued" && (position ?? 0) > 1);
       refreshPreparingStatusText();
     }
 
@@ -632,18 +641,49 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     }
 
     async function pollPreparing() {
+      const requestedId = recordingId;
       try {
-        const info = await getPlaybackInfo(recordingId);
+        const info = await getPlaybackInfo(requestedId);
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
         if (info.mode !== "preparing") {
           applyPlaybackInfo(info);
         } else {
           updatePreparingMeta(info);
         }
       } catch (e) {
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
         clearPreparingPoll();
         setPreparing(false);
         setLoading(false);
         onError(`Preview preparation failed: ${String(e)}`);
+      }
+    }
+
+    async function processNext() {
+      const requestedId = recordingId;
+      try {
+        await prioritizePreviewForRecording(requestedId);
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
+        const info = await getPlaybackInfo(requestedId);
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
+        if (info.mode === "preparing") {
+          updatePreparingMeta(info);
+        } else {
+          applyPlaybackInfo(info);
+        }
+      } catch (e) {
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
+        onError(`Could not move preview to the front of the queue: ${String(e)}`);
       }
     }
 
@@ -652,13 +692,20 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       fallbackLevel.current = level;
       setLoading(true);
       clearPlaybackTimers();
+      const requestedId = recordingId;
       try {
-        const info = await getPlaybackInfo(recordingId, {
+        const info = await getPlaybackInfo(requestedId, {
           forceFallback: true,
           fallbackLevel: level,
         });
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
         applyPlaybackInfo(info);
       } catch (e) {
+        if (loadCancelledRef.current || recordingIdRef.current !== requestedId) {
+          return;
+        }
         onError(`Playback fallback failed: ${String(e)}`);
         setLoading(false);
         setPreparing(false);
@@ -707,15 +754,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       setVideoSrc("");
       clearPlaybackTimers();
 
+      loadCancelledRef.current = false;
       let cancelled = false;
       (async () => {
         try {
           const info = await getPlaybackInfo(recordingId);
-          if (!cancelled) {
+          if (!cancelled && recordingIdRef.current === recordingId) {
             applyPlaybackInfo(info);
           }
         } catch (e) {
-          if (!cancelled) {
+          if (!cancelled && recordingIdRef.current === recordingId) {
             onError(`Media server unavailable: ${String(e)}`);
             setLoading(false);
           }
@@ -724,6 +772,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
       return () => {
         cancelled = true;
+        loadCancelledRef.current = true;
         clearPlaybackTimers();
         clearScrubSeekTimeout();
       };
@@ -741,10 +790,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           seekTo(startMs);
           if (isSeekingRef.current) {
             await new Promise<void>((resolve) => {
-              const onSeeked = () => {
+              let settled = false;
+              const finish = () => {
+                if (settled) return;
+                settled = true;
                 video.removeEventListener("seeked", onSeeked);
+                window.clearTimeout(timeoutId);
                 resolve();
               };
+              const onSeeked = () => finish();
+              const timeoutId = window.setTimeout(finish, SEEKED_WAIT_TIMEOUT_MS);
               video.addEventListener("seeked", onSeeked);
             });
           }
@@ -894,7 +949,18 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           <p className="video-player__status muted">Loading video…</p>
         )}
         {preparing && (
-          <p className="video-player__status muted">{preparingStatusText}</p>
+          <p className="video-player__status muted">
+            <span>{preparingStatusText}</span>
+            {canProcessNext && (
+              <button
+                type="button"
+                className="video-player__process-next"
+                onClick={() => void processNext()}
+              >
+                Process next
+              </button>
+            )}
+          </p>
         )}
         {seekingUi && !loading && !preparing && (
           <div className="video-player__seek-overlay" aria-live="polite">

@@ -146,6 +146,9 @@ describe("EditorView timeline wiring", () => {
     playerSpies.pause.mockReset();
     playerSpies.getCurrentMs.mockReset().mockReturnValue(0);
     playerSpies.isPaused.mockReset().mockReturnValue(true);
+    vi.mocked(api.startTrim).mockReset();
+    vi.mocked(api.startCompress).mockReset();
+    vi.mocked(api.resolveCopyPath).mockReset();
   });
 
   it("seeks and updates playhead on track click", () => {
@@ -447,5 +450,92 @@ describe("EditorView timeline wiring", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+  });
+
+  it("shows Fast trim by default and sends fast mode on trim", async () => {
+    vi.mocked(api.resolveCopyPath).mockResolvedValue({
+      path: "/recordings/clip_trimmed.mp4",
+      filename: "clip_trimmed.mp4",
+      exists: false,
+    });
+    vi.mocked(api.startTrim).mockResolvedValue({
+      id: "job-trim",
+      kind: "trim",
+      status: "queued",
+      progress: 0,
+      message: null,
+      outputPath: "/recordings/clip_trimmed.mp4",
+      sourcePath: recording.path,
+      sourceFilename: recording.filename,
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    renderEditor();
+
+    expect(
+      screen.getByRole("button", { name: "Fast trim" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Fast trim" }));
+
+    await vi.waitFor(() => {
+      expect(api.startTrim).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trimMode: "fast",
+          outputMode: "copy",
+          crf: 26,
+          useNvenc: false,
+        }),
+      );
+    });
+  });
+
+  it("chevron menu switches to Precise trim without starting a job", () => {
+    renderEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "Trim mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Precise trim" }));
+
+    expect(screen.getByRole("button", { name: "Precise trim" })).toBeTruthy();
+    expect(api.startTrim).not.toHaveBeenCalled();
+  });
+
+  it("sends precise trim settings when Precise trim is selected", async () => {
+    vi.mocked(api.resolveCopyPath).mockResolvedValue({
+      path: "/recordings/clip_trimmed.mp4",
+      filename: "clip_trimmed.mp4",
+      exists: false,
+    });
+    vi.mocked(api.startTrim).mockResolvedValue({
+      id: "job-trim-precise",
+      kind: "trim",
+      status: "queued",
+      progress: 0,
+      message: null,
+      outputPath: "/recordings/clip_trimmed.mp4",
+      sourcePath: recording.path,
+      sourceFilename: recording.filename,
+      queuedAt: "2024-01-01T00:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    renderEditor({ preferNvenc: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Trim mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Precise trim" }));
+    fireEvent.click(screen.getByRole("button", { name: "Precise trim" }));
+
+    await vi.waitFor(() => {
+      expect(api.startTrim).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trimMode: "precise",
+          crf: 26,
+          useNvenc: true,
+        }),
+      );
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLatestRef } from "../hooks/useRequestGeneration";
 import { openPath } from "@tauri-apps/plugin-opener";
-import type { JobStatus, Recording } from "../types";
+import type { JobStatus, Recording, TrimMode } from "../types";
 import {
   deleteRecording,
   formatBytes,
@@ -20,7 +21,15 @@ import { ConflictModal } from "../components/ConflictModal";
 import { ConfirmDeleteModal } from "../components/ConfirmDeleteModal";
 import { FolderRecordingList } from "../components/FolderRecordingList";
 import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
-import { CompressIcon, FolderIcon, PauseIcon, PlayIcon, ScissorsIcon } from "../components/icons";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CompressIcon,
+  FolderIcon,
+  PauseIcon,
+  PlayIcon,
+  ScissorsIcon,
+} from "../components/icons";
 import { clampPlayheadMs } from "../lib/timelinePosition";
 import { SEEK_TOLERANCE_SEC } from "../lib/videoSeek";
 
@@ -55,6 +64,7 @@ export function EditorView({
   onMissingFile,
 }: Props) {
   const playerRef = useRef<VideoPlayerHandle>(null);
+  const recordingIdRef = useLatestRef(recording.id);
   const catalogDurationMs = recording.durationMs ?? 0;
   const [timelineDurationMs, setTimelineDurationMs] = useState(
     catalogDurationMs || 1,
@@ -62,12 +72,15 @@ export function EditorView({
   const [startMs, setStartMs] = useState(0);
   const [endMs, setEndMs] = useState(catalogDurationMs || 1);
   const [currentMs, setCurrentMs] = useState(0);
-  const [mode, setMode] = useState<"precise" | "fast">("precise");
   const [outputMode, setOutputMode] = useState<"copy" | "replace">("copy");
   const [crf, setCrf] = useState(26);
   const [fps, setFps] = useState<30 | 60>(60);
+  const [trimMode, setTrimMode] = useState<TrimMode>("fast");
+  const [trimMenuOpen, setTrimMenuOpen] = useState(false);
+  const trimSplitRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -86,7 +99,7 @@ export function EditorView({
       ) ?? null,
     [editJobs, recording.path],
   );
-  const editBusy = activeEditJob != null;
+  const editBusy = activeEditJob != null || submitting;
   const editQueuePos =
     activeEditJob?.status === "queued"
       ? queuePosition(editJobs, activeEditJob.id)
@@ -108,6 +121,31 @@ export function EditorView({
     return () => window.clearInterval(id);
   }, [editBusy]);
 
+  useEffect(() => {
+    if (!trimMenuOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (!trimSplitRef.current?.contains(e.target as Node)) {
+        setTrimMenuOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setTrimMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [trimMenuOpen]);
+
+  const trimLabel = trimMode === "fast" ? "Fast trim" : "Precise trim";
+  const trimModeTips: Record<TrimMode, string> = {
+    fast: "Cuts quickly without re-encoding. Fast, but the start may be a little off or show a brief frozen image.",
+    precise:
+      "Re-encodes for frame-accurate cuts. Preserves source frame timing (VFR-safe). Slower.",
+  };
+
   const rootRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -121,6 +159,7 @@ export function EditorView({
     setConfirmDelete(false);
     setDeleting(false);
     setPlaying(false);
+    setTrimMenuOpen(false);
     setTimelineLocked(false);
     setDraftStartMs(null);
     setDraftEndMs(null);
@@ -229,23 +268,31 @@ export function EditorView({
   }
 
   async function beginTrim(copyCollision?: CopyCollision | null) {
+    if (submitting) return;
+    setSubmitting(true);
     setError(null);
     try {
       const status = await startTrim({
         recordingId: recording.id,
         startMs,
         endMs,
-        mode,
         outputMode,
         copyCollision: copyCollision ?? null,
+        trimMode,
+        crf,
+        useNvenc: preferNvenc,
       });
       onJobStarted(status);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setSubmitting(false);
     }
   }
 
   async function beginCompress(copyCollision?: CopyCollision | null) {
+    if (submitting) return;
+    setSubmitting(true);
     setError(null);
     try {
       const status = await startCompress({
@@ -259,6 +306,8 @@ export function EditorView({
       onJobStarted(status);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -367,8 +416,9 @@ export function EditorView({
             onError={setError}
             onDurationChange={handleVideoDuration}
             onMissingFile={() => {
-              void recordingFileExists(recording.id).then((exists) => {
-                if (!exists) {
+              const requestedId = recording.id;
+              void recordingFileExists(requestedId).then((exists) => {
+                if (!exists && recordingIdRef.current === requestedId) {
                   onMissingFile?.();
                 }
               });
@@ -413,15 +463,77 @@ export function EditorView({
           />
 
           <div className="editor__actions">
-            <button
-              type="button"
-              className="editor__action"
-              onClick={runTrim}
-              disabled={editBusy}
-            >
-              <ScissorsIcon />
-              <span>{editBusy ? "Working…" : "Trim"}</span>
-            </button>
+            <div className="editor__action-split" ref={trimSplitRef}>
+              <button
+                type="button"
+                className="editor__action editor__action--main"
+                title={editBusy ? undefined : trimModeTips[trimMode]}
+                onClick={() => void runTrim()}
+                disabled={editBusy}
+              >
+                <ScissorsIcon />
+                <span>{editBusy ? "Working…" : trimLabel}</span>
+              </button>
+              <button
+                type="button"
+                className="editor__action editor__action--menu"
+                aria-label="Trim mode"
+                aria-expanded={trimMenuOpen}
+                aria-haspopup="listbox"
+                onClick={() => setTrimMenuOpen((open) => !open)}
+                disabled={editBusy}
+              >
+                {trimMenuOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
+              </button>
+              {trimMenuOpen && (
+                <ul
+                  className="editor__trim-menu"
+                  role="listbox"
+                  aria-label="Trim mode"
+                >
+                  <li
+                    role="option"
+                    aria-selected={trimMode === "fast"}
+                    className={
+                      trimMode === "fast" ? "editor__trim-menu-item--active" : ""
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="editor__trim-menu-item"
+                      title={trimModeTips.fast}
+                      onClick={() => {
+                        setTrimMode("fast");
+                        setTrimMenuOpen(false);
+                      }}
+                    >
+                      Fast trim
+                    </button>
+                  </li>
+                  <li
+                    role="option"
+                    aria-selected={trimMode === "precise"}
+                    className={
+                      trimMode === "precise"
+                        ? "editor__trim-menu-item--active"
+                        : ""
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="editor__trim-menu-item"
+                      title={trimModeTips.precise}
+                      onClick={() => {
+                        setTrimMode("precise");
+                        setTrimMenuOpen(false);
+                      }}
+                    >
+                      Precise trim
+                    </button>
+                  </li>
+                </ul>
+              )}
+            </div>
             <button
               type="button"
               className="editor__action editor__action--secondary"
@@ -456,6 +568,10 @@ export function EditorView({
                 Replace original
               </label>
             </fieldset>
+          </div>
+
+          <div className="editor__job-options">
+            <h2>Compress</h2>
             <label className="stack-label editor__fps">
               Output FPS
               <select
@@ -466,33 +582,6 @@ export function EditorView({
                 <option value={30}>30</option>
               </select>
             </label>
-          </div>
-
-          <div className="editor__job-options">
-            <h2>Trim</h2>
-            <p className="hint">
-              Timeline uses timestamps (PTS), not frame numbers, safe for VFR.
-            </p>
-            <fieldset className="radio-group">
-              <label>
-                <input
-                  type="radio"
-                  checked={mode === "precise"}
-                  onChange={() => setMode("precise")}
-                />
-                Precise trim (re-encode, VFR-safe)
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  checked={mode === "fast"}
-                  onChange={() => setMode("fast")}
-                />
-                Fast trim — may cut on keyframe
-              </label>
-            </fieldset>
-
-            <h2>Compress</h2>
             <label className="stack-label">
               CRF / quality ({crf})
               <input

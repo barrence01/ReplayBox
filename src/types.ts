@@ -34,15 +34,22 @@ export interface Settings {
   preferNvenc: boolean;
   launchOnStartup: boolean;
   playbackCacheMaxGb: number;
+  previewCrf: number;
+  /** Scale denominator: 1 = original, 2 = half, 4 = quarter. */
+  previewScale: number;
 }
+
+export type TrimMode = "fast" | "precise";
 
 export interface TrimRequest {
   recordingId: string;
   startMs: number;
   endMs: number;
-  mode: "precise" | "fast";
   outputMode: "copy" | "replace";
   copyCollision?: "overwrite" | "unique" | null;
+  trimMode?: TrimMode;
+  crf?: number;
+  useNvenc?: boolean;
 }
 
 export interface CompressRequest {
@@ -75,12 +82,12 @@ export interface JobStatus {
 }
 
 export interface CatalogScanStarted {
-  kind: "full" | "folder";
+  kind: "full" | "folder" | "delta";
   folderPath?: string;
 }
 
 export interface CatalogScanFinished {
-  kind: "full" | "folder";
+  kind: "full" | "folder" | "delta";
   folderPath?: string;
   status: "success" | "error";
   count?: number;

@@ -10,9 +10,10 @@ use crate::playback::{self, PlaybackStrategy};
 use crate::playback_cache::{self, CacheJobStatus};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -35,6 +36,7 @@ pub struct PlaybackCacheClearResult {
 pub enum ScanKind {
     Full,
     Folder(String),
+    Delta(catalog::DeltaScope),
 }
 
 fn resolved_settings(state: &AppState) -> Result<Settings, String> {
@@ -66,20 +68,27 @@ pub fn spawn_catalog_scan(
     let (event_kind, folder_path) = match &kind {
         ScanKind::Full => ("full".to_string(), None),
         ScanKind::Folder(path) => ("folder".to_string(), Some(path.clone())),
+        ScanKind::Delta(scope) => (
+            "delta".to_string(),
+            match scope {
+                catalog::DeltaScope::Folder { folder_path } => Some(folder_path.clone()),
+                _ => None,
+            },
+        ),
     };
 
     {
         let mut scan = state.scan_state.lock();
         match &kind {
             ScanKind::Full => {
-                if scan.full {
+                if scan.full || scan.delta {
                     return Err("A library scan is already in progress".into());
                 }
                 scan.full = true;
             }
             ScanKind::Folder(path) => {
-                if scan.full {
-                    tracing::debug!(folder = %path, "ignoring folder scan during full rescan");
+                if scan.full || scan.delta {
+                    tracing::debug!(folder = %path, "ignoring folder scan during catalog sync");
                     return Ok(());
                 }
                 let key = catalog::normalize_dir(path);
@@ -87,6 +96,27 @@ pub fn spawn_catalog_scan(
                     return Ok(());
                 }
                 scan.folders.insert(key);
+            }
+            ScanKind::Delta(scope) => {
+                if scan.full {
+                    tracing::debug!("ignoring delta sync during full rescan");
+                    return Ok(());
+                }
+                match scope {
+                    catalog::DeltaScope::Folder { folder_path } => {
+                        let key = catalog::normalize_dir(folder_path);
+                        if scan.folders.contains(&key) {
+                            return Ok(());
+                        }
+                        scan.folders.insert(key);
+                    }
+                    _ => {
+                        if scan.delta {
+                            return Ok(());
+                        }
+                        scan.delta = true;
+                    }
+                }
             }
         }
     }
@@ -101,6 +131,7 @@ pub fn spawn_catalog_scan(
         let result = match &kind {
             ScanKind::Full => catalog::scan_library(&state, &settings),
             ScanKind::Folder(path) => catalog::scan_folder(&state, &settings, path),
+            ScanKind::Delta(scope) => catalog::scan_library_delta(&state, &settings, scope.clone()),
         };
 
         {
@@ -110,6 +141,12 @@ pub fn spawn_catalog_scan(
                 ScanKind::Folder(path) => {
                     scan.folders.remove(&catalog::normalize_dir(path));
                 }
+                ScanKind::Delta(scope) => match scope {
+                    catalog::DeltaScope::Folder { folder_path } => {
+                        scan.folders.remove(&catalog::normalize_dir(folder_path));
+                    }
+                    _ => scan.delta = false,
+                },
             }
         }
 
@@ -143,9 +180,27 @@ pub fn spawn_catalog_scan(
     Ok(())
 }
 
-#[tauri::command]
-pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
-    state.settings.lock().clone()
+fn spawn_blocking<T, F>(f: F) -> impl std::future::Future<Output = Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    async move {
+        tauri::async_runtime::spawn_blocking(f)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+struct JobPidGuard {
+    state: Arc<AppState>,
+    job_id: String,
+}
+
+impl Drop for JobPidGuard {
+    fn drop(&mut self) {
+        self.state.job_pids.lock().remove(&self.job_id);
+    }
 }
 
 /// Check that a path is a readable directory without mutating settings.
@@ -155,61 +210,106 @@ pub fn check_watch_dir(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_playback_cache_limits(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheLimits, String> {
-    disk_space::playback_cache_limits_for_dir(&state.paths.playback_cache_dir())
+pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
+    state.settings.lock().clone()
 }
 
 #[tauri::command]
-pub fn get_playback_cache_stats(state: State<'_, Arc<AppState>>) -> Result<PlaybackCacheStats, String> {
-    let settings = state.settings.lock();
-    Ok(PlaybackCacheStats {
-        used_bytes: playback_cache::playback_cache_used_bytes(&state.paths.playback_cache_dir()),
-        max_gb: settings.playback_cache_max_gb,
+pub async fn get_playback_cache_limits(
+    state: State<'_, Arc<AppState>>,
+) -> Result<PlaybackCacheLimits, String> {
+    let dir = state.paths.playback_cache_dir();
+    spawn_blocking(move || disk_space::playback_cache_limits_for_dir(&dir)).await?
+}
+
+#[tauri::command]
+pub async fn get_playback_cache_stats(
+    state: State<'_, Arc<AppState>>,
+) -> Result<PlaybackCacheStats, String> {
+    let state = state.inner().clone();
+    spawn_blocking(move || {
+        let settings = state.settings.lock();
+        Ok(PlaybackCacheStats {
+            used_bytes: playback_cache::playback_cache_used_bytes(&state.paths.playback_cache_dir()),
+            max_gb: settings.playback_cache_max_gb,
+        })
     })
+    .await?
 }
 
 #[tauri::command]
-pub fn clear_playback_cache(
+pub async fn clear_playback_cache(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<PlaybackCacheClearResult, String> {
-    playback_cache::cancel_all_cache_jobs(&state);
-    crate::tray_status::notify_queues_changed(&app);
-    let freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
-    Ok(PlaybackCacheClearResult { freed_bytes: freed })
+    let state = state.inner().clone();
+    spawn_blocking(move || {
+        playback_cache::cancel_all_cache_jobs(&state);
+        crate::tray_status::notify_queues_changed(&app);
+        let freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
+        Ok(PlaybackCacheClearResult { freed_bytes: freed })
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn clear_all_cache(
+pub async fn clear_all_cache(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<PlaybackCacheClearResult, String> {
-    playback_cache::cancel_all_cache_jobs(&state);
-    crate::tray_status::notify_queues_changed(&app);
-    let mut freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
-    freed += playback_cache::clear_thumbnails_dir(&state.paths.thumbs_dir())?;
-    db::clear_all_thumbnail_paths(&state.db.lock())?;
-    Ok(PlaybackCacheClearResult { freed_bytes: freed })
+    let state = state.inner().clone();
+    spawn_blocking(move || {
+        playback_cache::cancel_all_cache_jobs(&state);
+        crate::tray_status::notify_queues_changed(&app);
+        let mut freed = playback_cache::clear_playback_cache_dir(&state.paths.playback_cache_dir())?;
+        freed += playback_cache::clear_thumbnails_dir(&state.paths.thumbs_dir())?;
+        db::clear_all_thumbnail_paths(&state.db.lock())?;
+        Ok(PlaybackCacheClearResult { freed_bytes: freed })
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn update_settings(
+pub async fn update_settings(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: Settings,
 ) -> Result<Settings, String> {
-    settings::validate_watch_dir(&settings.watch_dir)?;
-    let limits = disk_space::playback_cache_limits_for_dir(&state.paths.playback_cache_dir())?;
-    settings::validate_playback_cache_max_gb(settings.playback_cache_max_gb, &limits)?;
-    let path = state.paths.settings_path();
-    settings.save(&path)?;
-    *state.settings.lock() = settings.clone();
-    sync_autostart(&app, settings.launch_on_startup)?;
-    playback_cache::run_cache_cleanup(
-        &state.paths.playback_cache_dir(),
-        &playback_cache::CleanupPolicy::from_settings(&settings),
-    );
-    Ok(settings)
+    let state = state.inner().clone();
+    spawn_blocking(move || {
+        settings::validate_watch_dir(&settings.watch_dir)?;
+        settings::validate_preview_settings(&settings)?;
+        let limits = disk_space::playback_cache_limits_for_dir(&state.paths.playback_cache_dir())?;
+        settings::validate_playback_cache_max_gb(settings.playback_cache_max_gb, &limits)?;
+        let path = state.paths.settings_path();
+        let prev = state.settings.lock().clone();
+        let prev_ffmpeg = state.ffmpeg_bin();
+        let prev_nvenc = state.nvenc_available();
+        settings.save(&path)?;
+        *state.settings.lock() = settings.clone();
+        let next_ffmpeg = state.ffmpeg_bin();
+        if next_ffmpeg != prev_ffmpeg {
+            state.encoder_cache.lock().invalidate();
+        }
+        let next_nvenc = state.nvenc_available();
+        let profile_changed = playback_cache::PreviewEncodeOptions::from_settings(&prev, prev_nvenc)
+            .profile_key
+            != playback_cache::PreviewEncodeOptions::from_settings(&settings, next_nvenc)
+                .profile_key;
+        sync_autostart(&app, settings.launch_on_startup)?;
+        if profile_changed {
+            for job in state.preview_queue.cancel_all() {
+                let _ = app.emit("preview-updated", job);
+            }
+            crate::tray_status::notify_queues_changed(&app);
+        }
+        playback_cache::run_cache_cleanup(
+            &state.paths.playback_cache_dir(),
+            &playback_cache::CleanupPolicy::from_settings(&settings),
+        );
+        Ok(settings)
+    })
+    .await?
 }
 
 fn sync_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -353,16 +453,30 @@ pub fn scan_folder(
 }
 
 #[tauri::command]
-pub fn check_tools(state: State<'_, Arc<AppState>>) -> Result<(bool, bool), String> {
-    Ok((
-        ffmpeg::binary_available(&state.ffmpeg_bin()),
-        ffmpeg::binary_available(&state.ffprobe_bin()),
-    ))
+pub fn sync_catalog_delta(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    scope: catalog::DeltaScope,
+) -> Result<(), String> {
+    spawn_catalog_scan(app, state.inner().clone(), ScanKind::Delta(scope))
 }
 
 #[tauri::command]
-pub fn nvenc_available(state: State<'_, Arc<AppState>>) -> bool {
-    ffmpeg::encoder_available(&state.ffmpeg_bin(), "h264_nvenc")
+pub async fn check_tools(state: State<'_, Arc<AppState>>) -> Result<(bool, bool), String> {
+    let state = state.inner().clone();
+    spawn_blocking(move || {
+        (
+            ffmpeg::binary_available(&state.ffmpeg_bin()),
+            ffmpeg::binary_available(&state.ffprobe_bin()),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn nvenc_available(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    let state = state.inner().clone();
+    spawn_blocking(move || state.nvenc_available()).await
 }
 
 #[tauri::command]
@@ -371,21 +485,25 @@ pub fn resolved_tool_paths(state: State<'_, Arc<AppState>>) -> (String, String) 
 }
 
 #[tauri::command]
-pub fn get_playback_info(
+pub async fn get_playback_info(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     recording_id: String,
     force_fallback: Option<bool>,
     fallback_level: Option<u8>,
 ) -> Result<PlaybackInfo, String> {
-    crate::preview_queue::spawn_preview_worker(app.clone(), state.inner().clone());
-    resolve_playback_info(
-        &app,
-        state.inner(),
-        &recording_id,
-        force_fallback,
-        fallback_level,
-    )
+    let state = state.inner().clone();
+    spawn_blocking(move || {
+        crate::preview_queue::spawn_preview_worker(app.clone(), state.clone());
+        resolve_playback_info(
+            &app,
+            &state,
+            &recording_id,
+            force_fallback,
+            fallback_level,
+        )
+    })
+    .await?
 }
 
 fn playback_info_direct(url: String) -> PlaybackInfo {
@@ -458,11 +576,23 @@ fn resolve_playback_info(
     let strategy = playback::playback_strategy(&recording, force, level);
     let cache_dir = state.paths.playback_cache_dir();
     let source = Path::new(&recording.path);
+    let settings = state.settings.lock().clone();
+    let encode_opts =
+        playback_cache::PreviewEncodeOptions::from_settings(&settings, state.nvenc_available());
+    let encode_ref = if strategy == PlaybackStrategy::Transcode {
+        Some(&encode_opts)
+    } else {
+        None
+    };
 
     if strategy != PlaybackStrategy::Direct {
-        if let Some(cached) =
-            playback_cache::is_cache_valid(&cache_dir, &recording.id, source, strategy)
-        {
+        if let Some(cached) = playback_cache::is_cache_valid(
+            &cache_dir,
+            &recording.id,
+            source,
+            strategy,
+            encode_ref,
+        ) {
             let path = cached.to_string_lossy().to_string();
             return Ok(playback_info_cache(playback::build_media_url(
                 &base_url, &path,
@@ -556,7 +686,7 @@ pub fn cancel_job(
             .job_pids
             .lock()
             .get(&job_id)
-            .and_then(|slot| *slot.lock().unwrap());
+            .and_then(|slot| *slot.lock());
         if let Some(pid) = pid {
             let _ = std::process::Command::new("kill")
                 .args(["-TERM", &pid.to_string()])
@@ -598,6 +728,18 @@ pub fn cancel_preview_for_recording(
         crate::tray_status::notify_queues_changed(&app);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn prioritize_preview_for_recording(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    recording_id: String,
+) -> Result<JobStatus, String> {
+    let job = state.preview_queue.promote_recording(&recording_id)?;
+    let _ = app.emit("preview-updated", job.clone());
+    crate::tray_status::notify_queues_changed(&app);
+    Ok(job)
 }
 
 #[tauri::command]
@@ -648,7 +790,7 @@ pub fn cleanup_on_quit(app: &AppHandle, state: &AppState) {
                 .job_pids
                 .lock()
                 .get(&job_id)
-                .and_then(|slot| *slot.lock().unwrap());
+                .and_then(|slot| *slot.lock());
             if let Some(pid) = pid {
                 let _ = std::process::Command::new("kill")
                     .args(["-TERM", &pid.to_string()])
@@ -678,6 +820,10 @@ fn spawn_edit_worker(app: AppHandle, state: Arc<AppState>) {
                 .job_pids
                 .lock()
                 .insert(job_id.clone(), child_slot.clone());
+            let _pid_guard = JobPidGuard {
+                state: state.clone(),
+                job_id: job_id.clone(),
+            };
             let on_progress = make_progress_emitter(app.clone(), state.clone(), job_id.clone());
 
             let (result, original_path) = match payload {
@@ -769,7 +915,7 @@ pub fn start_trim(
         kind: "trim".into(),
         status: "queued".into(),
         progress: 0.0,
-        message: Some(format!("Trim ({})", request.mode)),
+        message: Some("Trim".into()),
         output_path: Some(dest.to_string_lossy().to_string()),
         source_path: Some(recording.path.clone()),
         source_filename: Some(recording.filename.clone()),
@@ -877,32 +1023,22 @@ fn run_trim(
     let input = Path::new(&recording.path);
     let start = request.start_ms / 1000.0;
     let end = request.end_ms / 1000.0;
+    let crf = request.crf.unwrap_or(settings.compress_crf);
+    let use_nvenc = request.use_nvenc.unwrap_or(settings.prefer_nvenc);
 
     let temp = ffmpeg::sibling_output_with_ext(input, "tmp_edit", "mp4");
-    match request.mode.as_str() {
-        "fast" => {
-            ffmpeg::fast_trim(
-                &settings.ffmpeg_path,
-                input,
-                &temp,
-                start,
-                end,
-                child_slot,
-                on_progress,
-            )?
-        }
-        _ => {
-            ffmpeg::precise_trim(
-                &settings.ffmpeg_path,
-                input,
-                &temp,
-                start,
-                end,
-                child_slot,
-                on_progress,
-            )?
-        }
-    }
+    ffmpeg::trim(
+        &settings.ffmpeg_path,
+        input,
+        &temp,
+        start,
+        end,
+        &request.trim_mode,
+        crf,
+        use_nvenc,
+        child_slot,
+        on_progress,
+    )?;
 
     finish_output(input, &temp, &request.output_mode, dest)
 }
@@ -996,12 +1132,11 @@ fn finalize_job(
             settings.ffmpeg_path = state.ffmpeg_bin();
             settings.ffprobe_path = state.ffprobe_bin();
             let conn = state.db.lock();
-
             if path.to_string_lossy() != original_path && !Path::new(original_path).exists() {
                 let _ = db::delete_recording_by_path(&conn, original_path);
             }
-
-            let _ = catalog::index_file(&conn, &settings, &state.paths, &path);
+            drop(conn);
+            let _ = catalog::index_file(state, &settings, &path);
 
             state.edit_jobs.finish_job(
                 job_id,

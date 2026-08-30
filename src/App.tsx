@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useCatalogSync } from "./hooks/useCatalogSync";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import {
   cancelJob,
-  cancelPreviewForRecording,
   cancelPreviewJob,
   checkTools,
   clearFinishedJobs,
@@ -15,10 +15,13 @@ import {
   listPreviewJobs,
   listRecordings,
   rescanLibrary,
-  scanFolder,
   updateSettings,
 } from "./lib/api";
 import { mergeJob } from "./lib/queueHelpers";
+import {
+  loadRecordingsCache,
+  saveRecordingsCache,
+} from "./lib/recordingsCache";
 import { HOME_VIEW, trayPurgePatch } from "./lib/trayUiState";
 import type {
   CatalogScanFinished,
@@ -55,9 +58,17 @@ function App() {
   const [editJobs, setEditJobs] = useState<JobStatus[]>([]);
   const [previewJobs, setPreviewJobs] = useState<JobStatus[]>([]);
   const [fullScanning, setFullScanning] = useState(false);
+  const [deltaSyncing, setDeltaSyncing] = useState(false);
   const [folderScanningPath, setFolderScanningPath] = useState<string | null>(
     null,
   );
+  const [trayHidden, setTrayHidden] = useState(false);
+  const [sessionNowMs, setSessionNowMs] = useState(() => Date.now());
+
+  const watchDirRef = useRef<string | null>(null);
+  useEffect(() => {
+    watchDirRef.current = settings?.watchDir ?? null;
+  }, [settings?.watchDir]);
 
   const libraryReadyRef = useRef(libraryReady);
   useEffect(() => {
@@ -69,10 +80,19 @@ function App() {
     selectedRef.current = selected;
   }, [selected]);
 
+  const persistRecordings = useCallback((list: Recording[]) => {
+    setRecordings(list);
+    setSessionNowMs(Date.now());
+    const watchDir = watchDirRef.current;
+    if (watchDir) {
+      saveRecordingsCache(watchDir, list);
+    }
+  }, []);
+
   const refreshLibrary = useCallback(async () => {
     const list = await listRecordings();
-    setRecordings(list);
-  }, []);
+    persistRecordings(list);
+  }, [persistRecordings]);
 
   const refreshQueues = useCallback(async () => {
     try {
@@ -84,140 +104,174 @@ function App() {
     }
   }, []);
 
-  const releaseEditorResources = useCallback((recordingId: string | null) => {
-    if (!recordingId) return;
-    void cancelPreviewForRecording(recordingId).catch(() => {
-      /* preview may already be gone */
+  const markSyncFinishedRef = useRef<(() => void) | null>(null);
+
+  const { catalogSyncing, syncFromTray, syncFolder, markSyncFinished } =
+    useCatalogSync({
+      view,
+      watchDir: settings?.watchDir ?? null,
+      onRecordings: persistRecordings,
+      deltaSyncing,
+      fullScanning,
+      trayHidden,
+      onPersistCache: (list) => {
+        const watchDir = watchDirRef.current;
+        if (watchDir) {
+          saveRecordingsCache(watchDir, list);
+        }
+      },
     });
-  }, []);
+
+  useEffect(() => {
+    markSyncFinishedRef.current = markSyncFinished;
+  }, [markSyncFinished]);
 
   const goToHome = useCallback(() => {
-    setSelected((current) => {
-      if (current) {
-        releaseEditorResources(current.id);
-      }
-      return null;
-    });
+    setSelected(null);
     setReturnView(HOME_VIEW);
     setView(HOME_VIEW);
     setLibraryResetKey((k) => k + 1);
-  }, [releaseEditorResources]);
+  }, []);
 
   const purgeUiForTray = useCallback(() => {
+    setTrayHidden(true);
     goToHome();
     const patch = trayPurgePatch();
-    setLibraryReady(patch.libraryReady);
-    setRecordings(patch.recordings);
     setEditJobs(patch.editJobs);
     setPreviewJobs(patch.previewJobs);
   }, [goToHome]);
 
-  const hydrateUiFromTray = useCallback(async () => {
-    try {
-      const [list] = await Promise.all([listRecordings(), refreshQueues()]);
-      setRecordings(list);
-      setLibraryReady(true);
-    } catch (e) {
-      setBanner(String(e));
-      setLibraryReady(true);
-    }
+  const hydrateUiFromTray = useCallback(() => {
+    setTrayHidden(false);
     goToHome();
-  }, [goToHome, refreshQueues]);
+    syncFromTray();
+    void refreshQueues();
+  }, [goToHome, refreshQueues, syncFromTray]);
 
-  const navigateTo = useCallback(
-    (next: ReturnView) => {
-      setSelected((current) => {
-        if (current) {
-          releaseEditorResources(current.id);
-        }
-        return null;
-      });
-      setView(next);
-    },
-    [releaseEditorResources],
-  );
+  const navigateTo = useCallback((next: ReturnView) => {
+    if (next !== "queues") {
+      setSelected(null);
+    }
+    setView(next);
+  }, []);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const [s, t, list] = await Promise.all([
-          getSettings(),
-          checkTools(),
-          listRecordings(),
-        ]);
+        const [s, t] = await Promise.all([getSettings(), checkTools()]);
+        if (cancelled) {
+          return;
+        }
         setSettings(s);
+        watchDirRef.current = s.watchDir;
         setTools({ ffmpeg: t[0], ffprobe: t[1] });
-        setRecordings(list);
+
+        const cached = loadRecordingsCache(s.watchDir);
+        if (cached && cached.length > 0) {
+          setRecordings(cached);
+          setLibraryReady(true);
+        }
+
+        const list = await listRecordings();
+        if (cancelled) {
+          return;
+        }
+        persistRecordings(list);
         setLibraryReady(true);
         await refreshQueues();
       } catch (e) {
+        if (cancelled) {
+          return;
+        }
         setBanner(String(e));
         setLibraryReady(true);
       }
     })();
-  }, [refreshQueues]);
+    return () => {
+      cancelled = true;
+    };
+  }, [persistRecordings, refreshQueues]);
 
+  const catalogDebounceRef = useRef<number | null>(null);
   useEffect(() => {
-    const unsubs: Array<() => void> = [];
-
-    listen("catalog-updated", () => {
-      if (!libraryReadyRef.current) {
-        return;
+    return () => {
+      if (catalogDebounceRef.current !== null) {
+        window.clearTimeout(catalogDebounceRef.current);
       }
+    };
+  }, []);
+
+  useTauriEvent("catalog-updated", () => {
+    if (!libraryReadyRef.current) {
+      return;
+    }
+    if (catalogDebounceRef.current !== null) {
+      window.clearTimeout(catalogDebounceRef.current);
+    }
+    catalogDebounceRef.current = window.setTimeout(() => {
       void refreshLibrary();
       const current = selectedRef.current;
-      if (current) {
-        void getRecording(current.id).then((r) => {
-          if (r) setSelected(r);
-        });
+      if (!current) {
+        return;
       }
-    }).then((u) => unsubs.push(u));
+      const requestedId = current.id;
+      void getRecording(requestedId).then((r) => {
+        if (r && selectedRef.current?.id === requestedId) {
+          setSelected(r);
+        }
+      });
+    }, 200);
+  });
 
-    listen<CatalogScanStarted>("catalog-scan-started", (e) => {
-      if (e.payload.kind === "full") {
-        setFullScanning(true);
-      } else if (e.payload.folderPath) {
-        setFolderScanningPath(e.payload.folderPath);
-      }
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<CatalogScanStarted>("catalog-scan-started", (e) => {
+    if (e.payload.kind === "full") {
+      setFullScanning(true);
+    } else if (e.payload.kind === "delta") {
+      setDeltaSyncing(true);
+    }
+    if (e.payload.folderPath) {
+      setFolderScanningPath(e.payload.folderPath);
+    }
+  });
 
-    listen<CatalogScanFinished>("catalog-scan-finished", (e) => {
-      if (e.payload.kind === "full") {
-        setFullScanning(false);
-      } else if (e.payload.folderPath) {
-        setFolderScanningPath((current) =>
-          current === e.payload.folderPath ? null : current,
-        );
-      }
-      if (e.payload.status === "error" && e.payload.message) {
-        setBanner(e.payload.message);
-      }
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<CatalogScanFinished>("catalog-scan-finished", (e) => {
+    if (e.payload.kind === "full") {
+      setFullScanning(false);
+    } else if (e.payload.kind === "delta") {
+      setDeltaSyncing(false);
+      markSyncFinishedRef.current?.();
+      setSessionNowMs(Date.now());
+    }
+    if (e.payload.folderPath) {
+      setFolderScanningPath((current) =>
+        current === e.payload.folderPath ? null : current,
+      );
+    }
+    if (e.payload.status === "error" && e.payload.message) {
+      setBanner(e.payload.message);
+    }
+  });
 
-    listen<JobStatus>("job-updated", (e) => {
-      setEditJobs((prev) => mergeJob(prev, e.payload));
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<JobStatus>("job-updated", (e) => {
+    setEditJobs((prev) => mergeJob(prev, e.payload));
+  });
 
-    listen<JobStatus>("job-progress", (e) => {
-      setEditJobs((prev) => mergeJob(prev, e.payload));
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<JobStatus>("job-progress", (e) => {
+    setEditJobs((prev) => mergeJob(prev, e.payload));
+  });
 
-    listen<JobStatus>("preview-updated", (e) => {
-      setPreviewJobs((prev) => mergeJob(prev, e.payload));
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<JobStatus>("preview-updated", (e) => {
+    setPreviewJobs((prev) => mergeJob(prev, e.payload));
+  });
 
-    listen("app-to-tray", () => {
-      purgeUiForTray();
-    }).then((u) => unsubs.push(u));
+  useTauriEvent("app-to-tray", () => {
+    purgeUiForTray();
+  });
 
-    listen("app-from-tray", () => {
-      void hydrateUiFromTray();
-    }).then((u) => unsubs.push(u));
-
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [refreshLibrary, purgeUiForTray, hydrateUiFromTray]);
+  useTauriEvent("app-from-tray", () => {
+    hydrateUiFromTray();
+  });
 
   useEffect(() => {
     if (view === "queues") {
@@ -229,22 +283,13 @@ function App() {
     if (view !== "editor") {
       setReturnView(view as ReturnView);
     }
-    setSelected((current) => {
-      if (current && current.id !== recording.id) {
-        releaseEditorResources(current.id);
-      }
-      return recording;
-    });
+    setSelected(recording);
     setView("editor");
+    void refreshQueues();
   }
 
   function leaveEditor() {
-    setSelected((current) => {
-      if (current) {
-        releaseEditorResources(current.id);
-      }
-      return null;
-    });
+    setSelected(null);
     setView(returnView);
   }
 
@@ -327,6 +372,7 @@ function App() {
             watchDir={settings.watchDir}
             recordings={recordings}
             libraryReady={libraryReady}
+            catalogSyncing={catalogSyncing}
             onOpen={openRecording}
             fullScanning={fullScanning}
             folderScanningPath={folderScanningPath}
@@ -337,12 +383,8 @@ function App() {
                 setBanner(String(e));
               }
             }}
-            onScanFolder={async (folderPath) => {
-              try {
-                await scanFolder(folderPath);
-              } catch (e) {
-                setBanner(String(e));
-              }
+            onScanFolder={(folderPath) => {
+              syncFolder(folderPath);
             }}
           />
         )}
@@ -350,7 +392,12 @@ function App() {
           <p className="empty-state">Loading library…</p>
         )}
         {view === "session" && (
-          <SessionView allRecordings={recordings} onOpen={openRecording} />
+          <SessionView
+            allRecordings={recordings}
+            nowMs={sessionNowMs}
+            catalogSyncing={catalogSyncing}
+            onOpen={openRecording}
+          />
         )}
         {view === "queues" && (
           <QueuesView
@@ -450,6 +497,7 @@ function App() {
             onSave={async (next) => {
               const saved = await updateSettings(next);
               setSettings(saved);
+              watchDirRef.current = saved.watchDir;
               const t = await checkTools();
               setTools({ ffmpeg: t[0], ffprobe: t[1] });
             }}

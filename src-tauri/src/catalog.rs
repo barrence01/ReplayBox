@@ -4,13 +4,27 @@ use crate::models::Recording;
 use crate::settings::{AppPaths, Settings};
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "m4v", "ts"];
+const SESSION_WINDOW_SECS: u64 = 24 * 60 * 60;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DeltaScope {
+    Full,
+    Last24h,
+    Folder {
+        #[serde(rename = "folderPath")]
+        folder_path: String,
+    },
+}
 
 pub fn is_video_file(path: &Path) -> bool {
     path.extension()
@@ -76,11 +90,59 @@ pub fn resolve_folder_in_watch_dir(watch_dir: &str, folder_path: &str) -> Result
     Ok(folder)
 }
 
-/// Index or refresh a single recording.
+fn load_existing_recording(state: &AppState, abs_str: &str) -> Result<Option<Recording>, String> {
+    let conn = state.db.lock();
+    db::get_recording_by_path(&conn, abs_str)
+}
+
+fn persist_recording(state: &AppState, rec: &Recording) -> Result<(), String> {
+    let conn = state.db.lock();
+    db::upsert_recording(&conn, rec)
+}
+
+fn build_recording_from_probe(
+    id: String,
+    abs: &Path,
+    abs_str: String,
+    created_at: Option<String>,
+    modified_at: Option<String>,
+    size_bytes: Option<i64>,
+    probe: ProbeInfo,
+    thumbnail_path: Option<String>,
+) -> Recording {
+    let filename = abs
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let dir = abs
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    Recording {
+        id,
+        path: abs_str,
+        filename,
+        dir,
+        size_bytes,
+        duration_ms: probe.duration_ms,
+        width: probe.width,
+        height: probe.height,
+        video_codec: probe.video_codec,
+        audio_codec: probe.audio_codec,
+        is_vfr: probe.is_vfr,
+        created_at,
+        modified_at,
+        thumbnail_path,
+        session_id: None,
+        indexed_at: Utc::now().to_rfc3339(),
+    }
+}
+
 pub fn index_file(
-    conn: &rusqlite::Connection,
+    state: &AppState,
     settings: &Settings,
-    paths: &AppPaths,
     path: &Path,
 ) -> Result<Recording, String> {
     if !path.is_file() || !is_video_file(path) {
@@ -92,7 +154,7 @@ pub fn index_file(
         .unwrap_or_else(|_| path.to_path_buf());
     let abs_str = abs.to_string_lossy().to_string();
 
-    let existing = db::get_recording_by_path(conn, &abs_str)?;
+    let existing = load_existing_recording(state, &abs_str)?;
     let (created_at, modified_at, size_bytes) = file_times(&abs);
 
     if let Some(ref rec) = existing {
@@ -109,7 +171,7 @@ pub fn index_file(
 
     let probe = ffmpeg::probe(&settings.ffprobe_path, &abs)?;
 
-    let thumbs = paths.thumbs_dir();
+    let thumbs = state.paths.thumbs_dir();
     fs::create_dir_all(&thumbs).map_err(|e| e.to_string())?;
     let thumb_path = thumbs.join(format!("{id}.jpg"));
     let thumb_str = match ffmpeg::generate_thumbnail(
@@ -122,37 +184,32 @@ pub fn index_file(
         Err(_) => existing.and_then(|r| r.thumbnail_path),
     };
 
-    let filename = abs
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let dir = abs
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let rec = Recording {
+    let rec = build_recording_from_probe(
         id,
-        path: abs_str,
-        filename,
-        dir,
-        size_bytes,
-        duration_ms: probe.duration_ms,
-        width: probe.width,
-        height: probe.height,
-        video_codec: probe.video_codec,
-        audio_codec: probe.audio_codec,
-        is_vfr: probe.is_vfr,
+        &abs,
+        abs_str,
         created_at,
         modified_at,
-        thumbnail_path: thumb_str,
-        session_id: None,
-        indexed_at: Utc::now().to_rfc3339(),
-    };
+        size_bytes,
+        probe,
+        thumb_str,
+    );
 
-    db::upsert_recording(conn, &rec)?;
+    persist_recording(state, &rec)?;
     Ok(rec)
+}
+
+fn file_modified_since(path: &Path, since: SystemTime) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| t >= since)
+        .unwrap_or(true)
+}
+
+fn session_cutoff() -> SystemTime {
+    SystemTime::now()
+        .checked_sub(Duration::from_secs(SESSION_WINDOW_SECS))
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 fn collect_video_paths(root: &Path) -> Vec<PathBuf> {
@@ -164,6 +221,31 @@ fn collect_video_paths(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+pub fn collect_video_paths_since(root: &Path, since: SystemTime) -> Vec<PathBuf> {
+    WalkDir::new(root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().is_file()
+                && is_video_file(e.path())
+                && file_modified_since(e.path(), since)
+        })
+        .map(|e| e.path().to_path_buf())
+        .collect()
+}
+
+fn paths_to_seen(paths: &[PathBuf]) -> HashSet<String> {
+    paths
+        .iter()
+        .map(|path| {
+            path.canonicalize()
+                .unwrap_or_else(|_| path.clone())
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect()
+}
+
 fn index_paths(
     state: &AppState,
     settings: &Settings,
@@ -171,8 +253,7 @@ fn index_paths(
 ) -> Result<usize, String> {
     let mut count = 0usize;
     for path in paths {
-        let conn = state.db.lock();
-        match index_file(&conn, settings, &state.paths, path) {
+        match index_file(state, settings, path) {
             Ok(_) => count += 1,
             Err(e) => tracing::warn!(path = %path.display(), error = %e, "index skipped"),
         }
@@ -195,6 +276,107 @@ pub fn scan_library(state: &AppState, settings: &Settings) -> Result<usize, Stri
     let conn = state.db.lock();
     prune_missing(&conn, &state.paths)?;
     Ok(count)
+}
+
+fn prune_by_seen_paths(
+    conn: &rusqlite::Connection,
+    paths: &AppPaths,
+    seen: &HashSet<String>,
+    scope: &DeltaScope,
+    watch_dir: &str,
+) -> Result<(), String> {
+    match scope {
+        DeltaScope::Last24h => Ok(()),
+        DeltaScope::Full => {
+            let watch_root = normalize_dir(watch_dir);
+            let recordings = db::list_recordings(conn, None)?;
+            for rec in recordings {
+                if seen.contains(&rec.path) {
+                    continue;
+                }
+                let rec_dir = normalize_dir(&rec.dir);
+                let under_watch = rec_dir == watch_root
+                    || rec_dir.starts_with(&format!("{watch_root}/"));
+                if under_watch {
+                    remove_stale_recording(conn, paths, &rec)?;
+                }
+            }
+            Ok(())
+        }
+        DeltaScope::Folder { folder_path } => {
+            let prefix = normalize_dir(folder_path);
+            let recordings = db::list_recordings_under_dir(conn, &prefix)?;
+            for rec in recordings {
+                if !seen.contains(&rec.path) {
+                    remove_stale_recording(conn, paths, &rec)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Incremental catalog sync scoped to recent files, full library, or one folder.
+pub fn scan_library_delta(
+    state: &AppState,
+    settings: &Settings,
+    scope: DeltaScope,
+) -> Result<usize, String> {
+    match scope {
+        DeltaScope::Full => {
+            let root = PathBuf::from(&settings.watch_dir);
+            if !root.exists() {
+                let conn = state.db.lock();
+                prune_missing(&conn, &state.paths)?;
+                return Ok(0);
+            }
+
+            let paths = collect_video_paths(&root);
+            let seen = paths_to_seen(&paths);
+            let count = index_paths(state, settings, &paths)?;
+            let conn = state.db.lock();
+            prune_by_seen_paths(
+                &conn,
+                &state.paths,
+                &seen,
+                &DeltaScope::Full,
+                &settings.watch_dir,
+            )?;
+            Ok(count)
+        }
+        DeltaScope::Last24h => {
+            let root = PathBuf::from(&settings.watch_dir);
+            if !root.exists() {
+                return Ok(0);
+            }
+
+            let paths = collect_video_paths_since(&root, session_cutoff());
+            index_paths(state, settings, &paths)
+        }
+        DeltaScope::Folder { ref folder_path } => {
+            let folder = resolve_folder_in_watch_dir(&settings.watch_dir, folder_path)?;
+            if !folder.exists() {
+                let conn = state.db.lock();
+                prune_missing_in_folder(&conn, &state.paths, &folder)?;
+                return Ok(0);
+            }
+
+            let paths = collect_video_paths(&folder);
+            let seen = paths_to_seen(&paths);
+            let count = index_paths(state, settings, &paths)?;
+            let conn = state.db.lock();
+            prune_by_seen_paths(
+                &conn,
+                &state.paths,
+                &seen,
+                &DeltaScope::Folder {
+                    folder_path: folder_path.clone(),
+                },
+                &settings.watch_dir,
+            )?;
+            Ok(count)
+        }
+    }
 }
 
 /// Scan a single folder subtree under the watch directory.
@@ -265,6 +447,7 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::models::Recording;
+    use std::collections::HashSet;
     use std::path::PathBuf;
 
     #[test]
@@ -360,6 +543,111 @@ mod tests {
         let under_a = db::list_recordings_under_dir(&conn, "/watch/GameA").unwrap();
         assert_eq!(under_a.len(), 2);
         assert!(under_a.iter().all(|r| r.dir.starts_with("/watch/GameA")));
+    }
+
+    #[test]
+    fn build_recording_from_probe_maps_path_fields() {
+        let rec = build_recording_from_probe(
+            "id-1".into(),
+            Path::new("/videos/clip.mp4"),
+            "/videos/clip.mp4".into(),
+            None,
+            Some("2024-01-02T00:00:00Z".into()),
+            Some(100),
+            ProbeInfo {
+                duration_ms: Some(1500.0),
+                width: Some(1920),
+                height: Some(1080),
+                video_codec: Some("h264".into()),
+                audio_codec: Some("aac".into()),
+                is_vfr: true,
+            },
+            None,
+        );
+        assert_eq!(rec.id, "id-1");
+        assert_eq!(rec.filename, "clip.mp4");
+        assert_eq!(rec.dir, "/videos");
+        assert_eq!(rec.duration_ms, Some(1500.0));
+        assert!(rec.is_vfr);
+    }
+
+    #[test]
+    fn collect_video_paths_since_includes_recent_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.mp4");
+        std::fs::write(&clip, b"x").unwrap();
+        let paths = collect_video_paths_since(dir.path(), SystemTime::UNIX_EPOCH);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().and_then(|n| n.to_str()), Some("clip.mp4"));
+    }
+
+    #[test]
+    fn prune_by_seen_paths_removes_missing_full_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_db(&dir.path().join("test.db")).unwrap();
+        let paths = crate::settings::AppPaths {
+            config_dir: dir.path().join("config"),
+            data_dir: dir.path().join("data"),
+            log_dir: dir.path().join("log"),
+            cache_dir: dir.path().join("cache"),
+        };
+
+        let kept = Recording {
+            id: "keep".into(),
+            path: "/watch/GameA/keep.mp4".into(),
+            filename: "keep.mp4".into(),
+            dir: "/watch/GameA".into(),
+            size_bytes: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            video_codec: None,
+            audio_codec: None,
+            is_vfr: false,
+            created_at: None,
+            modified_at: None,
+            thumbnail_path: None,
+            session_id: None,
+            indexed_at: "2024-01-01T00:00:00Z".into(),
+        };
+        let gone = Recording {
+            id: "gone".into(),
+            path: "/watch/GameA/gone.mp4".into(),
+            filename: "gone.mp4".into(),
+            dir: "/watch/GameA".into(),
+            size_bytes: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            video_codec: None,
+            audio_codec: None,
+            is_vfr: false,
+            created_at: None,
+            modified_at: None,
+            thumbnail_path: None,
+            session_id: None,
+            indexed_at: "2024-01-01T00:00:00Z".into(),
+        };
+        db::upsert_recording(&conn, &kept).unwrap();
+        db::upsert_recording(&conn, &gone).unwrap();
+
+        let mut seen = HashSet::new();
+        seen.insert("/watch/GameA/keep.mp4".to_string());
+        prune_by_seen_paths(
+            &conn,
+            &paths,
+            &seen,
+            &DeltaScope::Full,
+            "/watch",
+        )
+        .unwrap();
+
+        assert!(db::get_recording_by_path(&conn, "/watch/GameA/keep.mp4")
+            .unwrap()
+            .is_some());
+        assert!(db::get_recording_by_path(&conn, "/watch/GameA/gone.mp4")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

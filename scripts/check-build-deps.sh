@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Validate host build dependencies for ReplayBox.
-# Usage: check-build-deps.sh [--ffmpeg | --appimage]
+# Usage: check-build-deps.sh [--ffmpeg | --dev | --appimage]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,11 +9,13 @@ PROFILE="${CHECK_BUILD_DEPS_PROFILE:-full}"
 for arg in "$@"; do
   case "${arg}" in
     --ffmpeg) PROFILE="ffmpeg" ;;
+    --dev) PROFILE="dev" ;;
     --appimage) PROFILE="appimage" ;;
     -h|--help)
-      echo "Usage: check-build-deps.sh [--ffmpeg | --appimage]"
+      echo "Usage: check-build-deps.sh [--ffmpeg | --dev | --appimage]"
       echo "  (default)  full Tauri production build deps"
       echo "  --ffmpeg   bundled FFmpeg build only"
+      echo "  --dev      tauri dev (full build deps + WebKit/GStreamer playback)"
       echo "  --appimage full deps + AppImage/GStreamer/fuse checks"
       exit 0
       ;;
@@ -139,6 +141,24 @@ check_gstreamer_runtime() {
   export REPLAYBOX_GST_PLUGIN_DIR
 }
 
+need_gstreamer_element() {
+  local element="$1"
+  if ! command -v gst-inspect-1.0 >/dev/null 2>&1; then
+    record_missing "command: gst-inspect-1.0 (gstreamer1.0-tools / gstreamer)"
+    return 1
+  fi
+  if ! gst-inspect-1.0 "${element}" >/dev/null 2>&1; then
+    record_missing "GStreamer element: ${element} (WebKit video preview)"
+    return 1
+  fi
+}
+
+check_gstreamer_webkit_playback() {
+  check_gstreamer_runtime || true
+  need_gstreamer_element appsink || true
+  need_gstreamer_element autoaudiosink || true
+}
+
 check_ffmpeg_profile() {
   need_cmd git || true
   need_cmd make || true
@@ -169,6 +189,13 @@ check_full_profile() {
     need_pkgconfig webkit2gtk-4.1 "libwebkit2gtk-4.1-dev / webkit2gtk-4.1" || true
     need_appindicator || true
   fi
+
+  need_cmd gst-inspect-1.0 || true
+  check_gstreamer_webkit_playback || true
+}
+
+check_dev_profile() {
+  check_full_profile
 }
 
 check_appimage_profile() {
@@ -265,6 +292,7 @@ EOF
 case "${PROFILE}" in
   ffmpeg) check_ffmpeg_profile ;;
   full) check_full_profile ;;
+  dev) check_dev_profile ;;
   appimage) check_appimage_profile ;;
 esac
 

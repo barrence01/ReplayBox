@@ -1,12 +1,13 @@
 //! Shared FIFO queue for trim and compress edit jobs (one processing at a time).
 
+use crate::job_run_gate::JobRunGate;
 use crate::models::{CompressRequest, JobStatus, Recording, TrimRequest};
 use crate::settings::Settings;
-use crate::job_run_gate::JobRunGate;
 use chrono::Utc;
+use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub enum PendingEditJob {
@@ -59,7 +60,7 @@ impl EditJobQueue {
     }
 
     pub fn enqueue(&self, job: JobStatus, payload: PendingEditJob) -> JobStatus {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         let id = job.id.clone();
         guard.jobs.insert(id.clone(), job.clone());
         guard.payloads.insert(id.clone(), payload);
@@ -69,23 +70,30 @@ impl EditJobQueue {
     }
 
     pub fn list(&self) -> Vec<JobStatus> {
-        let guard = self.inner.lock().expect("edit job queue lock");
+        let guard = self.inner.lock();
         let mut jobs: Vec<_> = guard.jobs.values().cloned().collect();
         jobs.sort_by(|a, b| a.queued_at.cmp(&b.queued_at));
         jobs
     }
 
+    pub fn has_active_jobs(&self) -> bool {
+        let guard = self.inner.lock();
+        guard
+            .jobs
+            .values()
+            .any(|job| matches!(job.status.as_str(), "queued" | "processing"))
+    }
+
     pub fn get(&self, job_id: &str) -> Option<JobStatus> {
         self.inner
             .lock()
-            .expect("edit job queue lock")
             .jobs
             .get(job_id)
             .cloned()
     }
 
     pub fn update_progress(&self, job_id: &str, fraction: f64) -> Option<JobStatus> {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         let job = guard.jobs.get_mut(job_id)?;
         if job.status != "processing" {
             return None;
@@ -95,7 +103,7 @@ impl EditJobQueue {
     }
 
     pub fn mark_cancelled_if_queued(&self, job_id: &str) -> Option<JobStatus> {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         let status = guard.jobs.get(job_id)?.status.clone();
         if status != "queued" {
             return None;
@@ -110,7 +118,7 @@ impl EditJobQueue {
     }
 
     pub fn mark_cancelled_processing(&self, job_id: &str) -> Option<JobStatus> {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         let job = guard.jobs.get_mut(job_id)?;
         if job.status != "processing" {
             return None;
@@ -124,12 +132,12 @@ impl EditJobQueue {
     }
 
     pub fn is_processing(&self, job_id: &str) -> bool {
-        let guard = self.inner.lock().expect("edit job queue lock");
+        let guard = self.inner.lock();
         guard.processing.as_deref() == Some(job_id)
     }
 
     pub fn dismiss(&self, job_id: &str) -> Result<(), String> {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         let job = guard
             .jobs
             .get(job_id)
@@ -142,7 +150,7 @@ impl EditJobQueue {
     }
 
     pub fn clear_finished(&self) {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         guard.jobs.retain(|_, job| !is_terminal(&job.status));
     }
 
@@ -172,24 +180,24 @@ impl EditJobQueue {
     }
 
     pub fn take_next_work(&self) -> (String, PendingEditJob) {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         loop {
             if let Some(work) = self.activate_next_locked(&mut guard) {
                 return work;
             }
-            guard = self.cvar.wait(guard).expect("edit job queue wait");
+            self.cvar.wait(&mut guard);
         }
     }
 
     #[cfg(test)]
     pub fn try_take_next(&self) -> Option<(String, PendingEditJob)> {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         self.activate_next_locked(&mut guard)
     }
 
     /// Ids of queued jobs plus the job currently processing, if any.
     pub fn active_job_ids(&self) -> Vec<String> {
-        let guard = self.inner.lock().expect("edit job queue lock");
+        let guard = self.inner.lock();
         let mut ids: Vec<String> = guard.pending.iter().cloned().collect();
         if let Some(id) = guard.processing.clone() {
             ids.push(id);
@@ -205,7 +213,7 @@ impl EditJobQueue {
         output_path: Option<String>,
         progress: Option<f64>,
     ) -> Option<JobStatus> {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         if guard.processing.as_deref() == Some(job_id) {
             guard.processing = None;
         }
@@ -236,7 +244,7 @@ impl EditJobQueue {
     where
         F: FnOnce(),
     {
-        let mut guard = self.inner.lock().expect("edit job queue lock");
+        let mut guard = self.inner.lock();
         if !guard.worker_started {
             guard.worker_started = true;
             drop(guard);
@@ -313,9 +321,11 @@ mod tests {
                 recording_id: id.into(),
                 start_ms: 0.0,
                 end_ms: 1000.0,
-                mode: "fast".into(),
                 output_mode: "copy".into(),
                 copy_collision: None,
+                trim_mode: "fast".into(),
+                crf: None,
+                use_nvenc: None,
             },
             dest: PathBuf::from("/tmp/out.mp4"),
         }
@@ -338,6 +348,17 @@ mod tests {
     }
 
     #[test]
+    fn has_active_jobs_tracks_queued_and_clears_when_cancelled() {
+        let q = test_queue();
+        q.enqueue(queued_job("t1", "trim"), trim_payload("t1"));
+        q.enqueue(queued_job("c1", "compress"), compress_payload("c1"));
+        assert!(q.has_active_jobs());
+        q.mark_cancelled_if_queued("t1").unwrap();
+        q.mark_cancelled_if_queued("c1").unwrap();
+        assert!(!q.has_active_jobs());
+    }
+
+    #[test]
     fn enqueue_mixed_kinds_stay_queued_until_taken() {
         let q = test_queue();
         q.enqueue(queued_job("t1", "trim"), trim_payload("t1"));
@@ -348,7 +369,7 @@ mod tests {
         assert_eq!(listed.len(), 3);
         assert!(listed.iter().all(|j| j.status == "queued"));
 
-        let front = q.inner.lock().unwrap().pending.front().cloned();
+        let front = q.inner.lock().pending.front().cloned();
         assert_eq!(front.as_deref(), Some("t1"));
     }
 
@@ -362,7 +383,7 @@ mod tests {
         assert_eq!(cancelled.status, "cancelled");
         assert!(cancelled.finished_at.is_some());
 
-        let pending: Vec<_> = q.inner.lock().unwrap().pending.iter().cloned().collect();
+        let pending: Vec<_> = q.inner.lock().pending.iter().cloned().collect();
         assert_eq!(pending, vec!["a".to_string()]);
     }
 

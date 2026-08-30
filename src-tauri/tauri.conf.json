@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "org.replaybox",
   "build": {
-    "beforeDevCommand": "npm run prepare:ffmpeg && npm run dev",
+    "beforeDevCommand": "bash scripts/check-build-deps.sh --dev && npm run prepare:ffmpeg && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run prepare:ffmpeg && npm run build",
     "frontendDist": "../dist"
