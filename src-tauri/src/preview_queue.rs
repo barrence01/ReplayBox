@@ -369,7 +369,15 @@ impl PreviewQueue {
                 .get_mut(&existing_id)
                 .and_then(|entry| resolve_existing(entry, strategy));
             match resolved {
-                Some(status) => return status,
+                Some(status) => {
+                    if matches!(status, CacheJobStatus::Preparing) {
+                        if let Some(job) = guard.entries.get(&existing_id).map(|e| e.job.clone()) {
+                            drop(guard);
+                            on_enqueue(job);
+                        }
+                    }
+                    return status;
+                }
                 None => {
                     if let Some(entry) = guard.entries.get_mut(&existing_id) {
                         entry.cancel.store(true, Ordering::Relaxed);
@@ -597,6 +605,7 @@ use tauri::Emitter;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn sample_recording(id: &str) -> Recording {
         Recording {
@@ -783,5 +792,49 @@ mod tests {
 
         gate.set_jobs_paused(false);
         assert!(q.try_take_next().is_some());
+    }
+
+    #[test]
+    fn ensure_cache_job_syncs_existing_preparing_job() {
+        use crate::db;
+        use crate::settings::{AppPaths, Settings};
+        use crate::state::AppState;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let paths = AppPaths {
+            config_dir: root.to_path_buf(),
+            data_dir: root.to_path_buf(),
+            log_dir: root.to_path_buf(),
+            cache_dir: root.join("cache"),
+        };
+        fs::create_dir_all(paths.playback_cache_dir()).unwrap();
+        let conn = db::open_db(&paths.db_path()).unwrap();
+        let state = AppState::new(paths, None, conn, Settings::default());
+
+        let job_id = enqueue_raw(&state.preview_queue, "a", PlaybackStrategy::Transcode);
+        let recording = sample_recording("a");
+
+        let sync_count = Arc::new(AtomicUsize::new(0));
+        let synced_job_id = job_id.clone();
+        let sync_count_cb = sync_count.clone();
+        let status = state.preview_queue.ensure_cache_job(
+            &state,
+            &recording,
+            PlaybackStrategy::Transcode,
+            move |job| {
+                sync_count_cb.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(job.id, synced_job_id);
+            },
+        );
+
+        assert!(matches!(status, CacheJobStatus::Preparing));
+        assert_eq!(sync_count.load(Ordering::Relaxed), 1);
+
+        let guard = state.preview_queue.inner.lock().unwrap();
+        assert_eq!(guard.pending.len(), 1);
+        assert_eq!(guard.by_recording.get("a").map(String::as_str), Some(job_id.as_str()));
     }
 }

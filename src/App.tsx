@@ -84,24 +84,12 @@ function App() {
     }
   }, []);
 
-  const releaseEditorResources = useCallback((recordingId: string | null) => {
-    if (!recordingId) return;
-    void cancelPreviewForRecording(recordingId).catch(() => {
-      /* preview may already be gone */
-    });
-  }, []);
-
   const goToHome = useCallback(() => {
-    setSelected((current) => {
-      if (current) {
-        releaseEditorResources(current.id);
-      }
-      return null;
-    });
+    setSelected(null);
     setReturnView(HOME_VIEW);
     setView(HOME_VIEW);
     setLibraryResetKey((k) => k + 1);
-  }, [releaseEditorResources]);
+  }, []);
 
   const purgeUiForTray = useCallback(() => {
     goToHome();
@@ -124,18 +112,12 @@ function App() {
     goToHome();
   }, [goToHome, refreshQueues]);
 
-  const navigateTo = useCallback(
-    (next: ReturnView) => {
-      setSelected((current) => {
-        if (current) {
-          releaseEditorResources(current.id);
-        }
-        return null;
-      });
-      setView(next);
-    },
-    [releaseEditorResources],
-  );
+  const navigateTo = useCallback((next: ReturnView) => {
+    if (next !== "queues") {
+      setSelected(null);
+    }
+    setView(next);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -231,20 +213,18 @@ function App() {
     }
     setSelected((current) => {
       if (current && current.id !== recording.id) {
-        releaseEditorResources(current.id);
+        void cancelPreviewForRecording(current.id).catch(() => {
+          /* preview may already be gone */
+        });
       }
       return recording;
     });
     setView("editor");
+    void refreshQueues();
   }
 
   function leaveEditor() {
-    setSelected((current) => {
-      if (current) {
-        releaseEditorResources(current.id);
-      }
-      return null;
-    });
+    setSelected(null);
     setView(returnView);
   }
 
