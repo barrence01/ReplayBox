@@ -21,7 +21,38 @@ npm run build:all
 
 ### AppImage
 
-To build only the Linux AppImage and copy it to `build/` at the repo root:
+**Recommended:** build inside Ubuntu 22.04 via Podman or Docker for a portable AppImage (glibc 2.35 baseline, works on Arch and Ubuntu):
+
+```bash
+chmod +x scripts/build-appimage-container.sh   # once
+./scripts/build-appimage-container.sh
+```
+
+Or via npm:
+
+```bash
+npm run build:appimage:container
+```
+
+Requires only **Podman** (rootless, preferred) or **Docker** on the host — no Tauri/GStreamer packages needed locally. The container image includes **Node.js 20 LTS** (Ubuntu apt ships Node 12, which is too old for Tauri CLI). First run builds the container image and may take a while (FFmpeg + Rust + linuxdeploy); later runs reuse caches under `.cache/`.
+
+Options:
+
+```bash
+./scripts/build-appimage-container.sh --rebuild-image   # force image rebuild
+./scripts/build-appimage-container.sh --shell           # debug shell in container
+VERBOSE=1 ./scripts/build-appimage-container.sh         # verbose AppImage log
+```
+
+| | Container build | Native host build |
+| --- | --- | --- |
+| Host deps | Podman or Docker only | Full Tauri/GStreamer stack |
+| glibc baseline | Ubuntu 22.04 (portable) | Depends on host distro |
+| Command | `npm run build:appimage:container` | `npm run build:appimage` |
+
+**Native host build** (advanced — inherits host libraries):
+
+To build only the Linux AppImage on the host and copy it to `build/` at the repo root:
 
 ```bash
 chmod +x scripts/check-build-deps.sh scripts/build-appimage.sh   # once
@@ -34,6 +65,19 @@ Or via npm:
 ```bash
 npm run build:appimage
 ```
+
+#### Container troubleshooting
+
+| Symptom | Likely fix |
+| --- | --- |
+| Permission denied on output files (Podman) | Wrapper uses `--userns=keep-id`; ensure rootless Podman is configured |
+| Root-owned files in `build/` (Docker) | Wrapper passes `-u uid:gid`; or `chown` after build |
+| `failed to run linuxdeploy` | `VERBOSE=1 ./scripts/build-appimage-container.sh`; inspect `build/appimage-build.log` |
+| FUSE-related errors | Try `REPLAYBOX_CONTAINER_FUSE=1 ./scripts/build-appimage-container.sh` |
+| Unwanted image prune | `REPLAYBOX_CONTAINER_NO_PRUNE=1` |
+
+After a successful build, the wrapper prunes dangling `<none>` images without the `org.replaybox.appimage-builder` label; the tagged `replaybox-appimage-builder:latest` image is kept.
+
 
 For day-to-day development:
 
@@ -217,8 +261,15 @@ sudo apt update && sudo apt install -y \
   wget \
   curl \
   file \
-  nodejs \
-  npm
+  xdg-utils
+```
+
+Node.js **20+** (Tauri 2 / Vite 7). Do not use Ubuntu apt `nodejs` on 22.04 (Node 12):
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+node --version   # v20.x or newer
 ```
 
 On Ubuntu 24.04+, `libfuse2` may install as `libfuse2t64`. linuxdeploy is itself an AppImage and needs `libfuse.so.2`, or extract-and-run (`APPIMAGE_EXTRACT_AND_RUN=1`, which `build-appimage.sh` sets).
@@ -237,6 +288,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 - **`fuse2` (Arch) / `libfuse2` (Ubuntu, possibly `libfuse2t64`)** — required to run/build AppImages on hosts that use FUSE2.
 - **`librsvg` / `librsvg2-bin`** — linuxdeploy’s GTK plugin uses `rsvg-convert` for icons.
 - **`patchelf`** — required by linuxdeploy’s GStreamer plugin (`--appimage` builds) to set RPATHs on bundled plugins.
+- **Node.js 20+** — required for Tauri CLI, Vite, and Vitest (`check-build-deps.sh` verifies the major version).
+- **`xdg-utils` (`xdg-open`)** — required by Tauri/linuxdeploy when bundling AppImage.
 
 ### Other distros
 
@@ -279,7 +332,8 @@ You do **not** need a system `ffmpeg`/`ffprobe` on `PATH` for development or pac
 | `npm run tauri:dev`                                      | FFmpeg + Tauri/Vite dev                                     |
 | `npm run tauri:build`                                    | FFmpeg + production Tauri build                             |
 | `npm run build:all` / `./scripts/build-all.sh`           | Full check + install + FFmpeg + production build            |
-| `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/`          |
+| `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/` (native host) |
+| `npm run build:appimage:container` / `./scripts/build-appimage-container.sh` | Same via Ubuntu 22.04 container (recommended) |
 | `VERBOSE=1 ./scripts/build-appimage.sh`                  | Same; also mirrors the (always verbose) Tauri/linuxdeploy log to the terminal |
 
 
@@ -307,7 +361,8 @@ The AppImage bundles additional components under **GPL-2.0** (bundled FFmpeg wit
 | `WebKitWebProcess` + `GLib-GObject-CRITICAL` after opening editor | Often follows missing GStreamer elements above. Fix plugins first; if it persists, try `GDK_BACKEND=x11 npm run tauri:dev`. |
 | `Gdk-Message: Error 71 … Wayland display` then app exits | WebKitGTK/NVIDIA on Wayland. ReplayBox sets `__NV_DISABLE_EXPLICIT_SYNC` and `WEBKIT_DISABLE_DMABUF_RENDERER` in `main.rs`. If it still fails, try: `GDK_BACKEND=x11 npm run tauri:dev`                                                                                                                                                                |
 | Vite `The service is no longer running` after crash      | Side effect of the Tauri process exiting; fix the window crash first, then restart `tauri:dev`                                                                                                                                                                                                                                                         |
-| `failed to run linuxdeploy` when bundling AppImage       | Tauri hides linuxdeploy stderr unless `--verbose` is set. Use `./scripts/build-appimage.sh` (always passes `--verbose`, sets `NO_STRIP=true` and `APPIMAGE_EXTRACT_AND_RUN=1`, and dumps host/log matches on failure). Inspect `build/appimage-build.log`. Run `./scripts/check-build-deps.sh --appimage` first (`patchelf`, `libfuse2`/`libfuse2t64`, `librsvg2-bin`, `gstreamer1.0-tools`). If the Tauri tool cache is corrupt: `rm -rf ~/.cache/tauri/linuxdeploy*` |
+| `failed to run linuxdeploy` when bundling AppImage       | Tauri hides linuxdeploy stderr unless `--verbose` is set. Use `./scripts/build-appimage.sh` (always passes `--verbose`, sets `NO_STRIP=true` and `APPIMAGE_EXTRACT_AND_RUN=1`, and dumps host/log matches on failure). Inspect `build/appimage-build.log`. Run `./scripts/check-build-deps.sh --appimage` first (`patchelf`, `libfuse2`/`libfuse2t64`, `librsvg2-bin`, `gstreamer1.0-tools`). If the Tauri tool cache is corrupt: `rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/tauri/linuxdeploy*` |
+| `appimagetool not found` after linuxdeploy succeeds (container) | Tauri caches under `XDG_CACHE_HOME` (e.g. `.cache/container-xdg/tauri/`). Re-run `./scripts/build-appimage-container.sh` — `build-appimage.sh` resolves that path automatically. |
 | AppImage freezes when opening the editor                 | Missing GStreamer plugins in the bundle. Install `gst-libav` and related plugins, then rebuild with `./scripts/build-appimage.sh` (clears/restages `src-tauri/.appimage-gst/` when the fingerprint changes). Smoke-test: open the editor and play a local H.264 MP4. Sanity check: `./src-tauri/target/release/replaybox` should work without freezing |
 | Second launch opens another window                       | Unexpected — single-instance should focus the existing window. Ensure you are on a build that includes `tauri-plugin-single-instance`                                                                                                                                                                                                                  |
 

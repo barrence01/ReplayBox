@@ -1,0 +1,17 @@
+# Build context exclusions — repo is bind-mounted at runtime; keep context minimal.
+node_modules
+dist
+dist-ssr
+build
+build-*/
+.cache
+.npm
+src-tauri/target
+src-tauri/gen
+src-tauri/resources/ffmpeg/ffmpeg
+src-tauri/resources/ffmpeg/ffprobe
+src-tauri/.appimage-gst
+squashfs-root
+.git
+*.AppImage
+*.log

@@ -72,7 +72,6 @@ GST_REQUIRED_PLUGINS=(
   libgstaudioconvert.so
   libgstaudioresample.so
   libgstaudioparsers.so
-  libgstvideoconvertscale.so
   libgstautodetect.so
   libgstvolume.so
   libgstapp.so
@@ -100,14 +99,41 @@ GST_STAGE="${ROOT}/src-tauri/.appimage-gst"
 GST_STAGE_PLUGINS="${GST_STAGE}/gstreamer-1.0"
 GST_FINGERPRINT_FILE="${GST_STAGE}/.fingerprint"
 
+# Ubuntu 22.04 ships libgstvideoconvert.so + libgstvideoscale.so; Arch merges them.
+gst_video_convert_scale_plugins() {
+  local plugin_dir="$1"
+  if [[ -f "${plugin_dir}/libgstvideoconvertscale.so" ]]; then
+    printf '%s\n' libgstvideoconvertscale.so
+  elif [[ -f "${plugin_dir}/libgstvideoconvert.so" && -f "${plugin_dir}/libgstvideoscale.so" ]]; then
+    printf '%s\n' libgstvideoconvert.so libgstvideoscale.so
+  else
+    printf '%s\n' libgstvideoconvertscale.so
+  fi
+}
+
+gst_all_required_plugins() {
+  local plugin
+  for plugin in "${GST_REQUIRED_PLUGINS[@]}"; do
+    printf '%s\n' "${plugin}"
+  done
+  gst_video_convert_scale_plugins "${GST_PLUGIN_DIR}"
+}
+
 gst_fingerprint() {
   local plugin
   {
     echo "dir=${GST_PLUGIN_DIR}"
-    for plugin in "${GST_REQUIRED_PLUGINS[@]}" "${GST_OPTIONAL_PLUGINS[@]}"; do
+    while IFS= read -r plugin; do
       local path="${GST_PLUGIN_DIR}/${plugin}"
       if [[ -e "${path}" ]]; then
-        # device:inode:size:mtime — cheap and stable for skip-vs-recopy.
+        stat -c '%d:%i:%s:%Y %n' "${path}"
+      else
+        echo "missing ${plugin}"
+      fi
+    done < <(gst_all_required_plugins)
+    for plugin in "${GST_OPTIONAL_PLUGINS[@]}"; do
+      local path="${GST_PLUGIN_DIR}/${plugin}"
+      if [[ -e "${path}" ]]; then
         stat -c '%d:%i:%s:%Y %n' "${path}"
       else
         echo "missing ${plugin}"
@@ -131,16 +157,17 @@ stage_gstreamer_plugins() {
   fi
 
   local plugin path missing=()
-  for plugin in "${GST_REQUIRED_PLUGINS[@]}"; do
+  while IFS= read -r plugin; do
     path="${GST_PLUGIN_DIR}/${plugin}"
     if [[ ! -f "${path}" ]]; then
       missing+=("${plugin}")
     fi
-  done
+  done < <(gst_all_required_plugins)
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "error: required GStreamer plugins missing under ${GST_PLUGIN_DIR}:" >&2
     printf '  %s\n' "${missing[@]}" >&2
     echo "Install (Arch): pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav" >&2
+    echo "Install (Ubuntu): apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav" >&2
     exit 1
   fi
 
@@ -148,7 +175,14 @@ stage_gstreamer_plugins() {
   mkdir -p "${GST_STAGE_PLUGINS}"
 
   local copied=0
-  for plugin in "${GST_REQUIRED_PLUGINS[@]}" "${GST_OPTIONAL_PLUGINS[@]}"; do
+  while IFS= read -r plugin; do
+    path="${GST_PLUGIN_DIR}/${plugin}"
+    if [[ -f "${path}" ]]; then
+      cp -a "${path}" "${GST_STAGE_PLUGINS}/"
+      copied=$((copied + 1))
+    fi
+  done < <(gst_all_required_plugins)
+  for plugin in "${GST_OPTIONAL_PLUGINS[@]}"; do
     path="${GST_PLUGIN_DIR}/${plugin}"
     if [[ -f "${path}" ]]; then
       cp -a "${path}" "${GST_STAGE_PLUGINS}/"
@@ -244,7 +278,9 @@ run_tauri() {
 }
 
 dump_host_diag() {
-  local pretty="unknown" fuse="missing" userns="" tauri_cache="${HOME}/.cache/tauri"
+  local pretty="unknown" fuse="missing" userns=""
+  local xdg_cache="${XDG_CACHE_HOME:-${HOME}/.cache}"
+  local tauri_cache="${xdg_cache}/tauri"
   if [[ -f /etc/os-release ]]; then
     # shellcheck disable=SC1091
     pretty="$(. /etc/os-release; echo "${PRETTY_NAME:-unknown}")"
@@ -268,7 +304,7 @@ dump_host_diag() {
     done
   fi
   echo "    libfuse.so.2: ${fuse}"
-  for tool in file patchelf rsvg-convert gst-inspect-1.0 curl wget fusermount fusermount3; do
+  for tool in file patchelf rsvg-convert gst-inspect-1.0 curl wget xdg-open fusermount fusermount3; do
     if command -v "${tool}" >/dev/null 2>&1; then
       echo "    ${tool}: $(command -v "${tool}")"
     else
@@ -415,12 +451,18 @@ ensure_cached_runtime() {
   mv -f "${tmp}" "${RUNTIME_CACHE}"
 }
 
+tauri_cache_dir() {
+  printf '%s\n' "${XDG_CACHE_HOME:-${HOME}/.cache}/tauri"
+}
+
 find_appimagetool() {
   if command -v appimagetool >/dev/null 2>&1; then
     command -v appimagetool
     return 0
   fi
-  local plugin="${HOME}/.cache/tauri/linuxdeploy-plugin-appimage.AppImage"
+  local tauri_cache plugin
+  tauri_cache="$(tauri_cache_dir)"
+  plugin="${tauri_cache}/linuxdeploy-plugin-appimage.AppImage"
   if [[ -x "${plugin}" ]]; then
     local extracted=""
     local candidate
@@ -794,7 +836,7 @@ mark T_icons
 echo "==> Re-packing AppImage with normalized icons"
 echo "    TMPDIR=${TMPDIR} (avoid full /tmp tmpfs truncating usr/share)"
 APPIMAGETOOL="$(find_appimagetool)" || {
-  echo "error: appimagetool not found (PATH or ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage)" >&2
+  echo "error: appimagetool not found (PATH, $(tauri_cache_dir)/linuxdeploy-plugin-appimage.AppImage)" >&2
   exit 1
 }
 # Ensure the bundled (offset-capable) mksquashfs is preferred over any host copy.

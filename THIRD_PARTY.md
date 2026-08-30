@@ -34,7 +34,7 @@ The Linux AppImage bundles dynamic libraries for in-app video playback and the d
 
 License text: [licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt).
 
-**Corresponding source for bundled system libraries:** the Arch Linux packages installed on the build host (e.g. `gstreamer`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, `gst-libav`, `webkit2gtk-4.1`, `gtk3`, `glib2`). Sources are available from [https://archlinux.org/packages/](https://archlinux.org/packages/) and [https://gitlab.archlinux.org/archlinux/packaging/packages/](https://gitlab.archlinux.org/archlinux/packaging/packages/).
+**Corresponding source for bundled system libraries:** Ubuntu 22.04 packages in the container build environment (e.g. `gstreamer1.0-plugins-base`, `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad`, `gstreamer1.0-libav`, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libglib2.0-0`). Sources are available from [https://packages.ubuntu.com/jammy/](https://packages.ubuntu.com/jammy/).
 
 ## Other dependencies (permissive)
 

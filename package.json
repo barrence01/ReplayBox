@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -13,6 +16,7 @@
     "prepare:ffmpeg": "bash scripts/build-ffmpeg.sh",
     "build:all": "bash scripts/build-all.sh",
     "build:appimage": "bash scripts/build-appimage.sh",
+    "build:appimage:container": "bash scripts/build-appimage-container.sh",
     "tauri": "tauri",
     "tauri:dev": "bash scripts/check-build-deps.sh --dev && npm run prepare:ffmpeg && tauri dev",
     "tauri:build": "npm run prepare:ffmpeg && tauri build"
