@@ -96,6 +96,13 @@ impl AppState {
         crate::tools::resolve_ffprobe(&settings, self.resource_dir.as_deref())
     }
 
+    pub fn resolved_settings(&self) -> Settings {
+        let mut settings = self.settings.lock().clone();
+        settings.ffmpeg_path = self.ffmpeg_bin();
+        settings.ffprobe_path = self.ffprobe_bin();
+        settings
+    }
+
     pub fn hardware_encoding_status(&self) -> HardwareEncodingStatus {
         let settings = self.settings.lock();
         let ffmpeg = crate::tools::resolve_ffmpeg(&settings, self.resource_dir.as_deref());
@@ -140,6 +147,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use super::AppState;
     use super::EncoderCache;
     use crate::ffmpeg::{HardwareEncodingStatus, VideoEncoder};
 
@@ -188,5 +196,67 @@ mod tests {
         cache.invalidate();
         assert!(cache.ffmpeg_path.is_empty());
         assert!(cache.status.is_none());
+    }
+
+    #[test]
+    fn resolved_settings_populates_tool_paths_when_saved_settings_are_empty() {
+        use crate::db;
+        use crate::settings::{AppPaths, Settings};
+        use std::fs;
+        use std::os::unix::fs::OpenOptionsExt;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let ffmpeg_dir = root.join("ffmpeg");
+        fs::create_dir_all(&ffmpeg_dir).unwrap();
+        for name in ["ffmpeg", "ffprobe"] {
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .mode(0o755)
+                .open(ffmpeg_dir.join(name))
+                .unwrap();
+        }
+        let paths = AppPaths {
+            config_dir: root.to_path_buf(),
+            data_dir: root.to_path_buf(),
+            log_dir: root.join("logs"),
+            cache_dir: root.join("cache"),
+        };
+        fs::create_dir_all(&paths.log_dir).unwrap();
+        let conn = db::open_db(&paths.db_path()).unwrap();
+        let state = AppState::new(paths, Some(root.to_path_buf()), conn, Settings::default());
+        let settings = state.resolved_settings();
+        assert_eq!(
+            settings.ffmpeg_path,
+            ffmpeg_dir.join("ffmpeg").to_string_lossy()
+        );
+        assert_eq!(
+            settings.ffprobe_path,
+            ffmpeg_dir.join("ffprobe").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn log_dir_is_exposed_on_app_paths() {
+        use crate::db;
+        use crate::settings::{AppPaths, Settings};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let log_dir = root.join("logs");
+        let paths = AppPaths {
+            config_dir: root.to_path_buf(),
+            data_dir: root.to_path_buf(),
+            log_dir: log_dir.clone(),
+            cache_dir: root.join("cache"),
+        };
+        fs::create_dir_all(&log_dir).unwrap();
+        let conn = db::open_db(&paths.db_path()).unwrap();
+        let state = AppState::new(paths, None, conn, Settings::default());
+        assert_eq!(state.paths.log_dir, log_dir);
     }
 }

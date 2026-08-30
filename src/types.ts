@@ -5,6 +5,8 @@ export interface PlaybackInfo {
   queuedAt?: string | null;
   startedAt?: string | null;
   queuePosition?: number | null;
+  previewStrategy?: "direct" | "stream_copy" | "transcode" | string | null;
+  previewInplace?: boolean | null;
 }
 
 export interface Recording {
@@ -90,6 +92,7 @@ export interface JobStatus {
   queuedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  previewStrategy?: "direct" | "stream_copy" | "transcode" | string | null;
 }
 
 export interface CatalogScanStarted {

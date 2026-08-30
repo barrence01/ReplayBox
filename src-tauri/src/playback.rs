@@ -3,17 +3,63 @@ use std::io::Read;
 use std::path::Path;
 
 const MP4_SCAN_LIMIT: usize = 64 * 1024;
-const HIGH_BITRATE_BPS: f64 = 15_000_000.0;
 
-/// How a recording should be delivered to the HTML5 player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackStrategy {
     Direct,
-    RemuxAudio,
+    StreamCopy,
     Transcode,
 }
 
-/// True when the MP4 has `mdat` before `moov` or `moov` is not in the file header.
+pub fn strategy_sidecar_name(strategy: PlaybackStrategy) -> &'static str {
+    match strategy {
+        PlaybackStrategy::Direct => "direct",
+        PlaybackStrategy::StreamCopy => "stream_copy",
+        PlaybackStrategy::Transcode => "transcode",
+    }
+}
+
+pub fn sidecar_strategy_rank(name: &str) -> u8 {
+    match name {
+        "transcode" => 2,
+        "stream_copy" | "remux" => 1,
+        _ => 0,
+    }
+}
+
+pub fn is_h264_video(codec: Option<&str>) -> bool {
+    matches!(
+        codec.map(str::to_ascii_lowercase).as_deref(),
+        Some("h264") | Some("avc1")
+    )
+}
+
+pub fn is_browser_native_audio(codec: Option<&str>) -> bool {
+    matches!(
+        codec.map(str::to_ascii_lowercase).as_deref(),
+        Some("aac") | Some("mp3") | Some("mp4a") | None
+    )
+}
+
+pub fn is_direct_playback_audio(codec: Option<&str>) -> bool {
+    is_browser_native_audio(codec)
+        || matches!(codec.map(str::to_ascii_lowercase).as_deref(), Some("opus"))
+}
+
+#[allow(dead_code)]
+pub fn audio_copy_compatible(audio_codec: Option<&str>) -> bool {
+    is_browser_native_audio(audio_codec)
+}
+
+#[allow(dead_code)]
+pub fn needs_container_fixup(path: &Path, ext: Option<&str>) -> bool {
+    if ext != Some("mp4") {
+        return true;
+    }
+    mp4_needs_stream_remux(path)
+}
+
+#[allow(dead_code)]
 pub fn mp4_needs_stream_remux(path: &Path) -> bool {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -69,97 +115,54 @@ fn mp4_moov_after_mdat(data: &[u8]) -> bool {
     !saw_moov
 }
 
-fn estimated_bitrate_bps(recording: &Recording) -> Option<f64> {
-    let size = recording.size_bytes? as f64;
-    let duration_ms = recording.duration_ms?;
-    if duration_ms <= 0.0 {
-        return None;
+pub fn select_initial_strategy(recording: &Recording) -> PlaybackStrategy {
+    let path = Path::new(&recording.path);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let ext_ref = ext.as_deref();
+
+    let video = recording
+        .video_codec
+        .as_deref()
+        .map(str::to_ascii_lowercase);
+
+    match video.as_deref() {
+        None => return PlaybackStrategy::Direct,
+        Some(codec) if is_h264_video(Some(codec)) => {}
+        _ => return PlaybackStrategy::Transcode,
     }
-    Some(size * 8.0 / (duration_ms / 1000.0))
-}
 
-fn prefers_cache_remux(recording: &Recording) -> bool {
-    if mp4_needs_stream_remux(Path::new(&recording.path)) {
-        return true;
+    if ext_ref != Some("mp4") {
+        return PlaybackStrategy::StreamCopy;
     }
-    estimated_bitrate_bps(recording).is_some_and(|bps| bps > HIGH_BITRATE_BPS)
+
+    PlaybackStrategy::Direct
 }
 
-/// Stream-copy remux keeps sparse keyframes; WebKit scrubbing needs CFR transcode preview.
-fn prefers_cache_transcode(recording: &Recording) -> bool {
-    vfr_needs_transcode_preview(recording) || prefers_cache_remux(recording)
+pub fn select_fallback_strategy(recording: &Recording, level: u8) -> PlaybackStrategy {
+    if level >= 2 {
+        return PlaybackStrategy::Transcode;
+    }
+
+    if is_h264_video(recording.video_codec.as_deref()) {
+        PlaybackStrategy::StreamCopy
+    } else {
+        PlaybackStrategy::Transcode
+    }
 }
 
-/// VFR MP4 in WebKitGTK seeks poorly with stream-copy remux; use CFR transcode preview.
-fn vfr_needs_transcode_preview(recording: &Recording) -> bool {
-    recording.is_vfr
-}
-
-/// Pick the lightest playback path the WebView is likely to support.
 pub fn playback_strategy(
     recording: &Recording,
     force_fallback: bool,
     fallback_level: u8,
 ) -> PlaybackStrategy {
     if force_fallback {
-        return fallback_strategy(recording, fallback_level);
+        return select_fallback_strategy(recording, fallback_level);
     }
 
-    let ext = Path::new(&recording.path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase());
-
-    let video = recording
-        .video_codec
-        .as_deref()
-        .map(str::to_ascii_lowercase);
-    let audio = recording
-        .audio_codec
-        .as_deref()
-        .map(str::to_ascii_lowercase);
-
-    if ext.as_deref() != Some("mp4") {
-        return PlaybackStrategy::Transcode;
-    }
-
-    match video.as_deref() {
-        Some("h264") | Some("avc1") => {}
-        None => return PlaybackStrategy::Direct,
-        _ => return PlaybackStrategy::Transcode,
-    }
-
-    if vfr_needs_transcode_preview(recording) {
-        return PlaybackStrategy::Transcode;
-    }
-
-    match audio.as_deref() {
-        Some("aac") | Some("mp3") | Some("mp4a") | None => {
-            if prefers_cache_transcode(recording) {
-                PlaybackStrategy::Transcode
-            } else {
-                PlaybackStrategy::Direct
-            }
-        }
-        Some("opus") => PlaybackStrategy::RemuxAudio,
-        _ => PlaybackStrategy::RemuxAudio,
-    }
-}
-
-fn fallback_strategy(recording: &Recording, level: u8) -> PlaybackStrategy {
-    if level >= 2 || prefers_cache_transcode(recording) {
-        return PlaybackStrategy::Transcode;
-    }
-
-    let video = recording
-        .video_codec
-        .as_deref()
-        .map(str::to_ascii_lowercase);
-
-    match video.as_deref() {
-        Some("h264") | Some("avc1") | None => PlaybackStrategy::RemuxAudio,
-        _ => PlaybackStrategy::Transcode,
-    }
+    select_initial_strategy(recording)
 }
 
 pub fn build_media_url(base_url: &str, path: &str) -> String {
@@ -183,7 +186,11 @@ mod tests {
         Recording {
             id: "id".into(),
             path: path.into(),
-            filename: "clip.mp4".into(),
+            filename: Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("clip.mp4")
+                .into(),
             dir: "/tmp".into(),
             size_bytes,
             duration_ms,
@@ -235,32 +242,44 @@ mod tests {
     }
 
     #[test]
-    fn high_bitrate_h264_aac_prefers_transcode_preview() {
+    fn high_bitrate_h264_aac_is_direct() {
+        let tmp = write_mp4_atoms(&[
+            (b"ftyp", b"isom"),
+            (b"moov", &[0; 8]),
+            (b"mdat", &[0; 8]),
+        ]);
         let rec = recording_with_meta(
             ("h264", "aac"),
-            "/v/faststart.mp4",
+            tmp.path().to_str().unwrap(),
             Some(800_000_000),
             Some(167_200.0),
             false,
         );
-        assert!(estimated_bitrate_bps(&rec).unwrap() > HIGH_BITRATE_BPS);
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Transcode);
+        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
     }
 
     #[test]
-    fn high_bitrate_force_fallback_level_one_is_transcode() {
+    fn high_bitrate_force_fallback_level_one_is_stream_copy() {
+        let tmp = write_mp4_atoms(&[
+            (b"ftyp", b"isom"),
+            (b"moov", &[0; 8]),
+            (b"mdat", &[0; 8]),
+        ]);
         let rec = recording_with_meta(
             ("h264", "aac"),
-            "/v/faststart.mp4",
+            tmp.path().to_str().unwrap(),
             Some(800_000_000),
             Some(167_200.0),
             false,
         );
-        assert_eq!(playback_strategy(&rec, true, 1), PlaybackStrategy::Transcode);
+        assert_eq!(
+            playback_strategy(&rec, true, 1),
+            PlaybackStrategy::StreamCopy
+        );
     }
 
     #[test]
-    fn moov_at_end_prefers_transcode_preview() {
+    fn moov_at_end_h264_aac_is_direct() {
         let tmp = write_mp4_atoms(&[
             (b"ftyp", b"isom"),
             (b"mdat", &[0; 16]),
@@ -268,11 +287,11 @@ mod tests {
         let mut rec = recording(("h264", "aac"), tmp.path().to_str().unwrap());
         rec.size_bytes = Some(1_000_000);
         rec.duration_ms = Some(60_000.0);
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Transcode);
+        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
     }
 
     #[test]
-    fn h264_aac_mp4_is_direct_without_remux_signals() {
+    fn h264_aac_mp4_is_direct_without_fixup_signals() {
         let tmp = write_mp4_atoms(&[
             (b"ftyp", b"isom"),
             (b"moov", &[0; 8]),
@@ -285,9 +304,30 @@ mod tests {
     }
 
     #[test]
-    fn h264_opus_mp4_is_remux() {
-        let rec = recording(("h264", "opus"), "/v/a.mp4");
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::RemuxAudio);
+    fn h264_opus_faststart_mp4_is_direct() {
+        let tmp = write_mp4_atoms(&[
+            (b"ftyp", b"isom"),
+            (b"moov", &[0; 8]),
+            (b"mdat", &[0; 8]),
+        ]);
+        let rec = recording(("h264", "opus"), tmp.path().to_str().unwrap());
+        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
+    }
+
+    #[test]
+    fn h264_opus_moov_at_end_is_direct() {
+        let tmp = write_mp4_atoms(&[
+            (b"ftyp", b"isom"),
+            (b"mdat", &[0; 16]),
+        ]);
+        let rec = recording(("h264", "opus"), tmp.path().to_str().unwrap());
+        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
+    }
+
+    #[test]
+    fn h264_exotic_audio_mp4_is_direct() {
+        let rec = recording(("h264", "pcm_s16le"), "/v/a.mp4");
+        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
     }
 
     #[test]
@@ -297,13 +337,16 @@ mod tests {
     }
 
     #[test]
-    fn non_mp4_is_transcode() {
+    fn mkv_h264_aac_is_stream_copy() {
         let rec = recording(("h264", "aac"), "/v/a.mkv");
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Transcode);
+        assert_eq!(
+            playback_strategy(&rec, false, 1),
+            PlaybackStrategy::StreamCopy
+        );
     }
 
     #[test]
-    fn force_fallback_level_one_is_remux() {
+    fn force_fallback_level_one_is_stream_copy() {
         let tmp = write_mp4_atoms(&[
             (b"ftyp", b"isom"),
             (b"moov", &[0; 8]),
@@ -312,7 +355,10 @@ mod tests {
         let mut rec = recording(("h264", "aac"), tmp.path().to_str().unwrap());
         rec.size_bytes = Some(1_000_000);
         rec.duration_ms = Some(60_000.0);
-        assert_eq!(playback_strategy(&rec, true, 1), PlaybackStrategy::RemuxAudio);
+        assert_eq!(
+            playback_strategy(&rec, true, 1),
+            PlaybackStrategy::StreamCopy
+        );
     }
 
     #[test]
@@ -339,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn vfr_h264_aac_mp4_prefers_transcode_preview() {
+    fn vfr_h264_aac_mp4_is_direct() {
         let tmp = write_mp4_atoms(&[
             (b"ftyp", b"isom"),
             (b"moov", &[0; 8]),
@@ -349,15 +395,23 @@ mod tests {
         rec.is_vfr = true;
         rec.size_bytes = Some(1_000_000);
         rec.duration_ms = Some(60_000.0);
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Transcode);
+        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
     }
 
     #[test]
-    fn vfr_force_fallback_level_one_is_transcode() {
+    fn vfr_force_fallback_level_one_is_stream_copy() {
         let rec = recording(("h264", "aac"), "/v/a.mp4");
         let mut rec = rec;
         rec.is_vfr = true;
-        assert_eq!(playback_strategy(&rec, true, 1), PlaybackStrategy::Transcode);
+        assert_eq!(
+            playback_strategy(&rec, true, 1),
+            PlaybackStrategy::StreamCopy
+        );
+    }
+
+    #[test]
+    fn sidecar_strategy_rank_accepts_legacy_remux() {
+        assert_eq!(sidecar_strategy_rank("remux"), sidecar_strategy_rank("stream_copy"));
     }
 
     #[test]

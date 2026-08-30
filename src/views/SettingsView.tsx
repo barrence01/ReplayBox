@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRequestGeneration } from "../hooks/useRequestGeneration";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import type { HardwareEncodingStatus, Settings, VideoEncoder } from "../types";
 import {
   checkWatchDir,
   clearAllCache,
   clearPlaybackCache,
+  getLogDir,
   getPlaybackCacheLimits,
   getPlaybackCacheStats,
   hardwareEncodingStatus,
@@ -64,6 +66,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
+  const [logDir, setLogDir] = useState("");
   const [hwStatus, setHwStatus] = useState<HardwareEncodingStatus | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const cacheClampAppliedRef = useRef(false);
@@ -134,6 +137,19 @@ export function SettingsView({ settings, tools, onSave }: Props) {
           return;
         }
         setResolved({ ffmpeg: "", ffprobe: "" });
+      });
+    getLogDir()
+      .then((dir) => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setLogDir(dir);
+      })
+      .catch(() => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setLogDir("");
       });
     hardwareEncodingStatus()
       .then((status) => {
@@ -273,6 +289,18 @@ export function SettingsView({ settings, tools, onSave }: Props) {
       setMessageIsError(true);
     } finally {
       setClearing(false);
+    }
+  }
+
+  async function handleOpenLogsFolder() {
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      const dir = logDir || (await getLogDir());
+      await openPath(dir);
+    } catch (e) {
+      setMessage(String(e));
+      setMessageIsError(true);
     }
   }
 
@@ -521,6 +549,21 @@ export function SettingsView({ settings, tools, onSave }: Props) {
             />
             Start ReplayBox in the tray when you log in
           </label>
+        </section>
+
+        <section className="settings-section">
+          <h2>Diagnostics</h2>
+          <p className="settings-field-meta hint">
+            Daily replaybox.log and ffmpeg.log files are kept for 7 days.
+          </p>
+          {logDir && (
+            <p className="settings-field-meta hint path">Logs: {logDir}</p>
+          )}
+          <div className="settings-cache-actions">
+            <button type="button" onClick={() => void handleOpenLogsFolder()}>
+              Open logs folder
+            </button>
+          </div>
         </section>
 
         <div className="settings-actions">

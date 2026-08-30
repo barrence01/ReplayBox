@@ -310,6 +310,7 @@ mod tests {
             queued_at: now_rfc3339(),
             started_at: None,
             finished_at: None,
+            preview_strategy: None,
         }
     }
 

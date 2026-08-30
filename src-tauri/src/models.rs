@@ -102,6 +102,10 @@ pub struct PlaybackInfo {
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_inplace: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,4 +124,6 @@ pub struct JobStatus {
     pub queued_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_strategy: Option<String>,
 }

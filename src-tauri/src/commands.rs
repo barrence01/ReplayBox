@@ -39,13 +39,6 @@ pub enum ScanKind {
     Delta(catalog::DeltaScope),
 }
 
-fn resolved_settings(state: &AppState) -> Result<Settings, String> {
-    let mut settings = state.settings.lock().clone();
-    settings.ffmpeg_path = state.ffmpeg_bin();
-    settings.ffprobe_path = state.ffprobe_bin();
-    Ok(settings)
-}
-
 fn ensure_ffprobe(settings: &Settings) -> Result<(), String> {
     if !ffmpeg::binary_available(&settings.ffprobe_path) {
         return Err(format!(
@@ -62,7 +55,7 @@ pub fn spawn_catalog_scan(
     state: Arc<AppState>,
     kind: ScanKind,
 ) -> Result<(), String> {
-    let settings = resolved_settings(&state)?;
+    let settings = state.resolved_settings();
     ensure_ffprobe(&settings)?;
 
     let (event_kind, folder_path) = match &kind {
@@ -498,6 +491,11 @@ pub fn resolved_tool_paths(state: State<'_, Arc<AppState>>) -> (String, String) 
 }
 
 #[tauri::command]
+pub fn get_log_dir(state: State<'_, Arc<AppState>>) -> String {
+    state.paths.log_dir.to_string_lossy().to_string()
+}
+
+#[tauri::command]
 pub async fn get_playback_info(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -527,6 +525,8 @@ fn playback_info_direct(url: String) -> PlaybackInfo {
         queued_at: None,
         started_at: None,
         queue_position: None,
+        preview_strategy: None,
+        preview_inplace: None,
     }
 }
 
@@ -538,14 +538,18 @@ fn playback_info_cache(url: String) -> PlaybackInfo {
         queued_at: None,
         started_at: None,
         queue_position: None,
+        preview_strategy: None,
+        preview_inplace: None,
     }
 }
 
 fn playback_info_preparing(
     state: &AppState,
     recording_id: &str,
+    strategy: Option<PlaybackStrategy>,
+    source_path: &Path,
 ) -> PlaybackInfo {
-    let (queue_status, queued_at, started_at, queue_position) = state
+    let (queue_status, queued_at, started_at, queue_position, preview_strategy) = state
         .preview_queue
         .lookup_by_recording(recording_id)
         .map(|(job, position)| {
@@ -554,9 +558,18 @@ fn playback_info_preparing(
                 Some(job.queued_at),
                 job.started_at,
                 position,
+                job.preview_strategy,
             )
         })
-        .unwrap_or((Some("queued".into()), None, None, None));
+        .unwrap_or((Some("queued".into()), None, None, None, None));
+
+    let preview_strategy = preview_strategy.or_else(|| {
+        strategy.map(|s| playback::strategy_sidecar_name(s).to_string())
+    });
+    let preview_inplace = strategy
+        .filter(|s| *s == PlaybackStrategy::StreamCopy)
+        .filter(|_| playback_cache::is_mp4_source(source_path))
+        .map(|_| true);
 
     PlaybackInfo {
         url: String::new(),
@@ -565,6 +578,8 @@ fn playback_info_preparing(
         queued_at,
         started_at,
         queue_position,
+        preview_strategy,
+        preview_inplace,
     }
 }
 
@@ -618,17 +633,27 @@ fn resolve_playback_info(
             CacheJobStatus::Ready { path } => {
                 let path_str = path.to_string_lossy().to_string();
                 crate::tray_status::notify_queues_changed(app);
-                return Ok(playback_info_cache(playback::build_media_url(
+                if playback_cache::is_playback_cache_path(&cache_dir, &path) {
+                    return Ok(playback_info_cache(playback::build_media_url(
+                        &base_url, &path_str,
+                    )));
+                }
+                return Ok(playback_info_direct(playback::build_media_url(
                     &base_url, &path_str,
                 )));
             }
             CacheJobStatus::Preparing => {
                 crate::tray_status::notify_queues_changed(app);
-                return Ok(playback_info_preparing(state, &recording.id));
+                return Ok(playback_info_preparing(
+                    state,
+                    &recording.id,
+                    Some(strategy),
+                    source,
+                ));
             }
             CacheJobStatus::Failed { message } => {
                 crate::tray_status::notify_queues_changed(app);
-                if strategy == PlaybackStrategy::RemuxAudio && level < 2 && !force {
+                if strategy == PlaybackStrategy::StreamCopy && level < 2 && !force {
                     return resolve_playback_info(app, state, recording_id, Some(true), Some(2));
                 }
                 return Err(format!("Preview preparation failed: {message}"));
@@ -901,12 +926,7 @@ pub fn start_trim(
         return Err("End time must be after start time".into());
     }
 
-    let settings = {
-        let mut s = state.settings.lock().clone();
-        s.ffmpeg_path = state.ffmpeg_bin();
-        s.ffprobe_path = state.ffprobe_bin();
-        s
-    };
+    let settings = state.resolved_settings();
     if !ffmpeg::binary_available(&settings.ffmpeg_path) {
         return Err(format!(
             "ffmpeg not found at '{}'. Run npm run prepare:ffmpeg or set the path in Settings.",
@@ -935,6 +955,7 @@ pub fn start_trim(
         queued_at: crate::job_queue::now_rfc3339(),
         started_at: None,
         finished_at: None,
+        preview_strategy: None,
     };
 
     let payload = crate::job_queue::PendingEditJob::Trim {
@@ -963,12 +984,7 @@ pub fn start_compress(
             .ok_or_else(|| "Recording not found".to_string())?
     };
 
-    let settings = {
-        let mut s = state.settings.lock().clone();
-        s.ffmpeg_path = state.ffmpeg_bin();
-        s.ffprobe_path = state.ffprobe_bin();
-        s
-    };
+    let settings = state.resolved_settings();
     if !ffmpeg::binary_available(&settings.ffmpeg_path) {
         return Err(format!(
             "ffmpeg not found at '{}'. Run npm run prepare:ffmpeg or set the path in Settings.",
@@ -997,6 +1013,7 @@ pub fn start_compress(
         queued_at: crate::job_queue::now_rfc3339(),
         started_at: None,
         finished_at: None,
+        preview_strategy: None,
     };
 
     let payload = crate::job_queue::PendingEditJob::Compress {
@@ -1147,9 +1164,7 @@ fn finalize_job(
 
     let job = match result {
         Ok(path) => {
-            let mut settings = state.settings.lock().clone();
-            settings.ffmpeg_path = state.ffmpeg_bin();
-            settings.ffprobe_path = state.ffprobe_bin();
+            let settings = state.resolved_settings();
             let conn = state.db.lock();
             if path.to_string_lossy() != original_path && !Path::new(original_path).exists() {
                 let _ = db::delete_recording_by_path(&conn, original_path);

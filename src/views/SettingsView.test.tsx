@@ -5,12 +5,17 @@ import type { Settings } from "../types";
 import { SettingsView } from "../views/SettingsView";
 
 const openMock = vi.fn();
+const openPathMock = vi.fn();
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
 }));
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openPath: (...args: unknown[]) => openPathMock(...args),
+}));
 const checkWatchDirMock = vi.fn();
 const resolvedToolPathsMock = vi.fn();
+const getLogDirMock = vi.fn();
 const getPlaybackCacheLimitsMock = vi.fn();
 const getPlaybackCacheStatsMock = vi.fn();
 const clearPlaybackCacheMock = vi.fn();
@@ -20,6 +25,7 @@ const hardwareEncodingStatusMock = vi.fn();
 vi.mock("../lib/api", () => ({
   checkWatchDir: (...args: unknown[]) => checkWatchDirMock(...args),
   resolvedToolPaths: (...args: unknown[]) => resolvedToolPathsMock(...args),
+  getLogDir: (...args: unknown[]) => getLogDirMock(...args),
   getPlaybackCacheLimits: (...args: unknown[]) =>
     getPlaybackCacheLimitsMock(...args),
   getPlaybackCacheStats: (...args: unknown[]) =>
@@ -68,13 +74,17 @@ describe("SettingsView watch folder access", () => {
 
   beforeEach(() => {
     openMock.mockReset();
+    openPathMock.mockReset();
     checkWatchDirMock.mockReset();
+    getLogDirMock.mockReset();
     getPlaybackCacheLimitsMock.mockReset();
     getPlaybackCacheStatsMock.mockReset();
     clearPlaybackCacheMock.mockReset();
     clearAllCacheMock.mockReset();
     hardwareEncodingStatusMock.mockReset();
     resolvedToolPathsMock.mockResolvedValue(["", ""]);
+    getLogDirMock.mockResolvedValue("/home/user/.local/share/org.replaybox/logs");
+    openPathMock.mockResolvedValue(undefined);
     hardwareEncodingStatusMock.mockResolvedValue(baseHwStatus);
     getPlaybackCacheLimitsMock.mockResolvedValue(baseLimits);
     getPlaybackCacheStatsMock.mockResolvedValue({
@@ -422,6 +432,32 @@ describe("SettingsView watch folder access", () => {
 
     await waitFor(() => {
       expect(getPlaybackCacheLimitsMock).toHaveBeenCalled();
+    });
+  });
+
+  it("opens logs folder when Open logs folder is clicked", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Logs: \/home\/user\/\.local\/share\/org\.replaybox\/logs/),
+      ).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open logs folder" }));
+
+    await waitFor(() => {
+      expect(openPathMock).toHaveBeenCalledWith(
+        "/home/user/.local/share/org.replaybox/logs",
+      );
     });
   });
 });

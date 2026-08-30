@@ -136,7 +136,9 @@ Application files are stored under XDG directories resolved by Tauri `PathResolv
 | Cache (preview / playback) | `~/.cache/org.replaybox/playback/`   |
 
 
-The **preview cache** holds remuxed or transcoded MP4 copies used for in-app playback when the original file is not WebView-friendly. Each entry is `{recordingId}.mp4` with a `{recordingId}.json` sidecar (source mtime/size and strategy). Original recordings stay in the watch folder. Entries older than 24 hours are removed automatically; total size is capped by **Preview cache** in Settings (default 5 GB).
+The **preview cache** holds compatibility copies used when the editor cannot play the original recording. For MP4 + H.264, ReplayBox serves the watch-folder file first (HTTP Range supports `moov` at the end of the file). A cache job runs only after a confirmed playback failure, or proactively for non-MP4 containers such as MKV. The fallback ladder is: **Direct** (original) → **StreamCopy** (video copy, Opus preserved when possible, faststart) → **Transcode** (video re-encode, last resort).
+
+When StreamCopy runs on an **MP4** source, ReplayBox remuxes the recording **in place** in the watch folder (lossless container fix; no duplicate in the preview cache). If in-place replacement fails, it falls back to a cache copy. **MKV** StreamCopy and **Transcode** previews still use `~/.cache/org.replaybox/playback/` (`{recordingId}.mp4` plus a `{recordingId}.json` sidecar). Entries older than 24 hours are removed automatically; total size is capped by **Preview cache** in Settings (default 5 GB). WebKit may reject some OBS MP4s (VFR, `moov` at end) before optimization; that is a player limitation, not a codec mismatch in the catalog.
 
 Logs are created when the app **runs** (dev or installed binary), not by `./scripts/build-all.sh` alone.
 

@@ -36,10 +36,11 @@ export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void
 }
 
 export const SEEK_SETTLE_MS = 500;
+export const LOCKED_SEEK_MAX_ATTEMPTS = 20;
 /** Max wall-clock time for a locked seek before giving up. */
-export const SEEK_MAX_MS = 5500;
+export const SEEK_MAX_MS =
+  LOCKED_SEEK_MAX_ATTEMPTS * SEEK_SETTLE_MS + SEEK_SETTLE_MS;
 export const SEEK_TOLERANCE_SEC = 0.2;
-export const LOCKED_SEEK_MAX_ATTEMPTS = 10;
 
 export function isSeekAtTargetSec(
   currentSec: number,
