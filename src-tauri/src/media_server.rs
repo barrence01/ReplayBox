@@ -2,13 +2,14 @@ use crate::state::AppState;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 const RANGE_CHUNK_SIZE: usize = 256 * 1024;
+const MEDIA_SERVER_THREADS: usize = 8;
 
-/// Starts a localhost HTTP server that serves media with Range support for `<video>`.
 pub fn start(state: Arc<AppState>) -> Result<String, String> {
     let server = Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
     let ip_port = server
@@ -17,14 +18,29 @@ pub fn start(state: Arc<AppState>) -> Result<String, String> {
         .ok_or_else(|| "media server did not bind to an inet address".to_string())?;
     let base_url = format!("http://{ip_port}");
 
+    let (tx, rx) = std::sync::mpsc::channel::<tiny_http::Request>();
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..MEDIA_SERVER_THREADS {
+        let rx = rx.clone();
+        let state = state.clone();
+        thread::spawn(move || loop {
+            let request = rx.lock().recv();
+            match request {
+                Ok(request) => {
+                    if let Err(e) = handle_request(&state, request) {
+                        tracing::error!("media server error: {e}");
+                    }
+                }
+                Err(_) => break,
+            }
+        });
+    }
+
     thread::spawn(move || {
         for request in server.incoming_requests() {
-            let state = state.clone();
-            thread::spawn(move || {
-                if let Err(e) = handle_request(&state, request) {
-                    tracing::error!("media server error: {e}");
-                }
-            });
+            if tx.send(request).is_err() {
+                break;
+            }
         }
     });
 

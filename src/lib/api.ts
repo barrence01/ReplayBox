@@ -135,6 +135,10 @@ export function cancelPreviewForRecording(recordingId: string) {
   return invoke<void>("cancel_preview_for_recording", { recordingId });
 }
 
+export function prioritizePreviewForRecording(recordingId: string) {
+  return invoke<JobStatus>("prioritize_preview_for_recording", { recordingId });
+}
+
 export function getJobsPaused() {
   return invoke<boolean>("get_jobs_paused");
 }

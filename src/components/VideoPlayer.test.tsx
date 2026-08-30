@@ -4,9 +4,12 @@ import { createRef } from "react";
 import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
 
 const getPlaybackInfoMock = vi.fn();
+const prioritizePreviewForRecordingMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   getPlaybackInfo: (...args: unknown[]) => getPlaybackInfoMock(...args),
+  prioritizePreviewForRecording: (...args: unknown[]) =>
+    prioritizePreviewForRecordingMock(...args),
 }));
 
 describe("VideoPlayer", () => {
@@ -17,6 +20,8 @@ describe("VideoPlayer", () => {
 
   beforeEach(() => {
     getPlaybackInfoMock.mockReset();
+    prioritizePreviewForRecordingMock.mockReset();
+    prioritizePreviewForRecordingMock.mockResolvedValue({ id: "job-1" });
 
     Object.defineProperty(HTMLMediaElement.prototype, "play", {
       configurable: true,
@@ -250,6 +255,63 @@ describe("VideoPlayer", () => {
     expect(getPlaybackInfoMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("ignores preparing poll results after recordingId changes", async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    getPlaybackInfoMock.mockImplementation((id: string) => {
+      if (id === "rec-old") {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve({
+        url: "http://127.0.0.1:1/media?path=%2Fnew.mp4",
+        mode: "direct",
+      });
+    });
+
+    const onError = vi.fn();
+    const { container, rerender } = render(
+      <VideoPlayer
+        recordingId="rec-old"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={onError}
+      />,
+    );
+
+    rerender(
+      <VideoPlayer
+        recordingId="rec-new"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={onError}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")?.getAttribute("src")).toBe(
+        "http://127.0.0.1:1/media?path=%2Fnew.mp4",
+      );
+    });
+
+    resolveFirst?.({
+      url: "http://127.0.0.1:1/media?path=%2Fold.mp4",
+      mode: "direct",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("video")?.getAttribute("src")).toBe(
+      "http://127.0.0.1:1/media?path=%2Fnew.mp4",
+    );
+  });
+
   it("shows elapsed from backend startedAt while preparing", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
@@ -307,6 +369,111 @@ describe("VideoPlayer", () => {
 
     await waitFor(() => {
       expect(container.textContent).toContain("Waiting in queue · #2 (00:10)");
+    });
+    expect(container.querySelector(".video-player__process-next")).toBeTruthy();
+  });
+
+  it("hides process next when queued at front", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:01:00.000Z"));
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "",
+      mode: "preparing",
+      queueStatus: "queued",
+      queuedAt: "2024-01-01T00:00:50.000Z",
+      queuePosition: 1,
+    });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Waiting in queue · #1 (00:10)");
+    });
+    expect(container.querySelector(".video-player__process-next")).toBeNull();
+  });
+
+  it("hides process next while preview is processing", async () => {
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "",
+      mode: "preparing",
+      queueStatus: "processing",
+      queuedAt: "2024-01-01T00:00:50.000Z",
+      startedAt: "2024-01-01T00:00:50.000Z",
+    });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Preparing preview");
+    });
+    expect(container.querySelector(".video-player__process-next")).toBeNull();
+  });
+
+  it("process next promotes the queued preview and refreshes playback info", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:01:00.000Z"));
+    getPlaybackInfoMock
+      .mockResolvedValueOnce({
+        url: "",
+        mode: "preparing",
+        queueStatus: "queued",
+        queuedAt: "2024-01-01T00:00:50.000Z",
+        queuePosition: 2,
+      })
+      .mockResolvedValue({
+        url: "",
+        mode: "preparing",
+        queueStatus: "queued",
+        queuedAt: "2024-01-01T00:00:50.000Z",
+        queuePosition: 1,
+      });
+
+    const { container } = render(
+      <VideoPlayer
+        recordingId="rec-1"
+        startMs={0}
+        endMs={1000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".video-player__process-next")).toBeTruthy();
+    });
+
+    const button = container.querySelector(
+      ".video-player__process-next",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+    });
+
+    await waitFor(() => {
+      expect(prioritizePreviewForRecordingMock).toHaveBeenCalledWith("rec-1");
+    });
+    await waitFor(() => {
+      expect(container.querySelector(".video-player__process-next")).toBeNull();
+      expect(container.textContent).toContain("Waiting in queue · #1");
     });
   });
 

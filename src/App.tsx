@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import {
   cancelJob,
-  cancelPreviewForRecording,
   cancelPreviewJob,
   checkTools,
   clearFinishedJobs,
@@ -120,6 +119,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const [s, t, list] = await Promise.all([
@@ -127,79 +127,98 @@ function App() {
           checkTools(),
           listRecordings(),
         ]);
+        if (cancelled) {
+          return;
+        }
         setSettings(s);
         setTools({ ffmpeg: t[0], ffprobe: t[1] });
         setRecordings(list);
         setLibraryReady(true);
         await refreshQueues();
       } catch (e) {
+        if (cancelled) {
+          return;
+        }
         setBanner(String(e));
         setLibraryReady(true);
       }
     })();
-  }, [refreshQueues]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
+  const catalogDebounceRef = useRef<number | null>(null);
   useEffect(() => {
-    const unsubs: Array<() => void> = [];
-
-    listen("catalog-updated", () => {
-      if (!libraryReadyRef.current) {
-        return;
+    return () => {
+      if (catalogDebounceRef.current !== null) {
+        window.clearTimeout(catalogDebounceRef.current);
       }
+    };
+  }, []);
+
+  useTauriEvent("catalog-updated", () => {
+    if (!libraryReadyRef.current) {
+      return;
+    }
+    if (catalogDebounceRef.current !== null) {
+      window.clearTimeout(catalogDebounceRef.current);
+    }
+    catalogDebounceRef.current = window.setTimeout(() => {
       void refreshLibrary();
       const current = selectedRef.current;
-      if (current) {
-        void getRecording(current.id).then((r) => {
-          if (r) setSelected(r);
-        });
+      if (!current) {
+        return;
       }
-    }).then((u) => unsubs.push(u));
+      const requestedId = current.id;
+      void getRecording(requestedId).then((r) => {
+        if (r && selectedRef.current?.id === requestedId) {
+          setSelected(r);
+        }
+      });
+    }, 200);
+  });
 
-    listen<CatalogScanStarted>("catalog-scan-started", (e) => {
-      if (e.payload.kind === "full") {
-        setFullScanning(true);
-      } else if (e.payload.folderPath) {
-        setFolderScanningPath(e.payload.folderPath);
-      }
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<CatalogScanStarted>("catalog-scan-started", (e) => {
+    if (e.payload.kind === "full") {
+      setFullScanning(true);
+    } else if (e.payload.folderPath) {
+      setFolderScanningPath(e.payload.folderPath);
+    }
+  });
 
-    listen<CatalogScanFinished>("catalog-scan-finished", (e) => {
-      if (e.payload.kind === "full") {
-        setFullScanning(false);
-      } else if (e.payload.folderPath) {
-        setFolderScanningPath((current) =>
-          current === e.payload.folderPath ? null : current,
-        );
-      }
-      if (e.payload.status === "error" && e.payload.message) {
-        setBanner(e.payload.message);
-      }
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<CatalogScanFinished>("catalog-scan-finished", (e) => {
+    if (e.payload.kind === "full") {
+      setFullScanning(false);
+    } else if (e.payload.folderPath) {
+      setFolderScanningPath((current) =>
+        current === e.payload.folderPath ? null : current,
+      );
+    }
+    if (e.payload.status === "error" && e.payload.message) {
+      setBanner(e.payload.message);
+    }
+  });
 
-    listen<JobStatus>("job-updated", (e) => {
-      setEditJobs((prev) => mergeJob(prev, e.payload));
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<JobStatus>("job-updated", (e) => {
+    setEditJobs((prev) => mergeJob(prev, e.payload));
+  });
 
-    listen<JobStatus>("job-progress", (e) => {
-      setEditJobs((prev) => mergeJob(prev, e.payload));
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<JobStatus>("job-progress", (e) => {
+    setEditJobs((prev) => mergeJob(prev, e.payload));
+  });
 
-    listen<JobStatus>("preview-updated", (e) => {
-      setPreviewJobs((prev) => mergeJob(prev, e.payload));
-    }).then((u) => unsubs.push(u));
+  useTauriEvent<JobStatus>("preview-updated", (e) => {
+    setPreviewJobs((prev) => mergeJob(prev, e.payload));
+  });
 
-    listen("app-to-tray", () => {
-      purgeUiForTray();
-    }).then((u) => unsubs.push(u));
+  useTauriEvent("app-to-tray", () => {
+    purgeUiForTray();
+  });
 
-    listen("app-from-tray", () => {
-      void hydrateUiFromTray();
-    }).then((u) => unsubs.push(u));
-
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [refreshLibrary, purgeUiForTray, hydrateUiFromTray]);
+  useTauriEvent("app-from-tray", () => {
+    void hydrateUiFromTray();
+  });
 
   useEffect(() => {
     if (view === "queues") {
@@ -211,14 +230,7 @@ function App() {
     if (view !== "editor") {
       setReturnView(view as ReturnView);
     }
-    setSelected((current) => {
-      if (current && current.id !== recording.id) {
-        void cancelPreviewForRecording(current.id).catch(() => {
-          /* preview may already be gone */
-        });
-      }
-      return recording;
-    });
+    setSelected(recording);
     setView("editor");
     void refreshQueues();
   }

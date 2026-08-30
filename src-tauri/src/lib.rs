@@ -11,6 +11,7 @@ mod models;
 mod playback;
 mod playback_cache;
 mod preview_queue;
+mod process_util;
 mod settings;
 mod state;
 mod tools;
@@ -159,6 +160,7 @@ pub fn run() {
             let resource_dir = tools::discover_resource_dir(app.path().resource_dir().ok());
             let conn = db::open_db(&paths.db_path())?;
             let state = AppState::new(paths.clone(), resource_dir, conn, settings.clone());
+            let _ = state.nvenc_available();
             playback_cache::run_cache_cleanup(
                 &paths.playback_cache_dir(),
                 &playback_cache::CleanupPolicy::from_settings(&settings),
@@ -235,6 +237,7 @@ pub fn run() {
             commands::cancel_job,
             commands::cancel_preview_job,
             commands::cancel_preview_for_recording,
+            commands::prioritize_preview_for_recording,
             commands::get_jobs_paused,
             commands::set_jobs_paused,
             commands::start_trim,

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLatestRef } from "../hooks/useRequestGeneration";
 import { openPath } from "@tauri-apps/plugin-opener";
 import type { JobStatus, Recording } from "../types";
 import {
@@ -55,6 +56,7 @@ export function EditorView({
   onMissingFile,
 }: Props) {
   const playerRef = useRef<VideoPlayerHandle>(null);
+  const recordingIdRef = useLatestRef(recording.id);
   const catalogDurationMs = recording.durationMs ?? 0;
   const [timelineDurationMs, setTimelineDurationMs] = useState(
     catalogDurationMs || 1,
@@ -67,6 +69,7 @@ export function EditorView({
   const [fps, setFps] = useState<30 | 60>(60);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -85,7 +88,7 @@ export function EditorView({
       ) ?? null,
     [editJobs, recording.path],
   );
-  const editBusy = activeEditJob != null;
+  const editBusy = activeEditJob != null || submitting;
   const editQueuePos =
     activeEditJob?.status === "queued"
       ? queuePosition(editJobs, activeEditJob.id)
@@ -228,6 +231,8 @@ export function EditorView({
   }
 
   async function beginTrim(copyCollision?: CopyCollision | null) {
+    if (submitting) return;
+    setSubmitting(true);
     setError(null);
     try {
       const status = await startTrim({
@@ -240,10 +245,14 @@ export function EditorView({
       onJobStarted(status);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setSubmitting(false);
     }
   }
 
   async function beginCompress(copyCollision?: CopyCollision | null) {
+    if (submitting) return;
+    setSubmitting(true);
     setError(null);
     try {
       const status = await startCompress({
@@ -257,6 +266,8 @@ export function EditorView({
       onJobStarted(status);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -365,8 +376,9 @@ export function EditorView({
             onError={setError}
             onDurationChange={handleVideoDuration}
             onMissingFile={() => {
-              void recordingFileExists(recording.id).then((exists) => {
-                if (!exists) {
+              const requestedId = recording.id;
+              void recordingFileExists(requestedId).then((exists) => {
+                if (!exists && recordingIdRef.current === requestedId) {
                   onMissingFile?.();
                 }
               });

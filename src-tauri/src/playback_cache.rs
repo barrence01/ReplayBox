@@ -1,6 +1,7 @@
 use crate::ffmpeg;
 use crate::logging::{append_ffmpeg_log_bytes, flush_ffmpeg_log};
 use crate::playback::PlaybackStrategy;
+use crate::process_util::{kill_child, ChildSlot};
 use crate::settings::Settings;
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
@@ -8,9 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,8 +25,7 @@ pub struct PreviewEncodeOptions {
 }
 
 impl PreviewEncodeOptions {
-    pub fn from_settings(settings: &Settings, ffmpeg_bin: &str) -> Self {
-        let use_nvenc = ffmpeg::encoder_available(ffmpeg_bin, "h264_nvenc");
+    pub fn from_settings(settings: &Settings, use_nvenc: bool) -> Self {
         let crf = settings.preview_crf;
         let scale = settings.preview_scale;
         let profile_key = preview_profile_key(crf, scale, use_nvenc);
@@ -217,15 +216,6 @@ fn spawn_stderr_reader(stderr: std::process::ChildStderr) {
     });
 }
 
-fn kill_child(child_slot: &Arc<Mutex<Option<Child>>>) {
-    if let Ok(mut guard) = child_slot.lock() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 pub(crate) fn run_ffmpeg_cache_job(
     ffmpeg: &str,
     input: &Path,
@@ -234,7 +224,10 @@ pub(crate) fn run_ffmpeg_cache_job(
     audio_codec: Option<&str>,
     encode_opts: &PreviewEncodeOptions,
     cancel: &AtomicBool,
-    child_slot: &Arc<Mutex<Option<Child>>>,
+    child_slot: &ChildSlot,
+    cache_dir: &Path,
+    recording_id: &str,
+    preview_profile: Option<String>,
 ) -> Result<(), String> {
     run_ffmpeg_cache(
         ffmpeg,
@@ -245,23 +238,8 @@ pub(crate) fn run_ffmpeg_cache_job(
         encode_opts,
         cancel,
         child_slot,
-    )
-}
-
-pub(crate) fn write_cache_sidecar(
-    cache_dir: &Path,
-    recording_id: &str,
-    mtime: u64,
-    size: u64,
-    strategy: PlaybackStrategy,
-    preview_profile: Option<String>,
-) -> Result<(), String> {
-    write_sidecar(
         cache_dir,
         recording_id,
-        mtime,
-        size,
-        strategy,
         preview_profile,
     )
 }
@@ -278,7 +256,10 @@ fn run_ffmpeg_cache(
     audio_codec: Option<&str>,
     encode_opts: &PreviewEncodeOptions,
     cancel: &AtomicBool,
-    child_slot: &Arc<Mutex<Option<Child>>>,
+    child_slot: &ChildSlot,
+    cache_dir: &Path,
+    recording_id: &str,
+    preview_profile: Option<String>,
 ) -> Result<(), String> {
     let tmp = cache_temp_path(output);
     if tmp.exists() {
@@ -328,7 +309,7 @@ fn run_ffmpeg_cache(
         spawn_stderr_reader(stderr);
     }
 
-    *child_slot.lock().expect("cache child lock") = Some(child);
+    *child_slot.lock() = Some(child);
 
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -338,7 +319,7 @@ fn run_ffmpeg_cache(
         }
 
         let finished = {
-            let mut guard = child_slot.lock().expect("cache child lock");
+            let mut guard = child_slot.lock();
             if let Some(child) = guard.as_mut() {
                 match child.try_wait() {
                     Ok(Some(status)) => {
@@ -371,6 +352,16 @@ fn run_ffmpeg_cache(
         let _ = fs::remove_file(&tmp);
         return Err("Cache job cancelled".into());
     }
+
+    let (mtime, size) = source_metadata(input)?;
+    write_sidecar(
+        cache_dir,
+        recording_id,
+        mtime,
+        size,
+        strategy,
+        preview_profile,
+    )?;
 
     if output.exists() {
         fs::remove_file(output).map_err(|e| e.to_string())?;

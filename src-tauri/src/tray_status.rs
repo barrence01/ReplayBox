@@ -26,21 +26,13 @@ impl TrayIconState {
     }
 }
 
+#[cfg(test)]
 pub fn job_is_active(status: &str) -> bool {
     matches!(status, "queued" | "processing")
 }
 
 pub fn queues_are_busy(state: &AppState) -> bool {
-    state
-        .edit_jobs
-        .list()
-        .iter()
-        .any(|j| job_is_active(&j.status))
-        || state
-            .preview_queue
-            .list()
-            .iter()
-            .any(|j| job_is_active(&j.status))
+    state.edit_jobs.has_active_jobs() || state.preview_queue.has_active_jobs()
 }
 
 /// Update tray icon when queue busy state changes. No-op if tray is unavailable.

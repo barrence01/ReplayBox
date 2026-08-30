@@ -3,7 +3,8 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -382,7 +383,7 @@ fn run_ffmpeg(
         .map_err(|e| format!("Failed to run ffmpeg ({ffmpeg}): {e}"))?;
 
     if let Some(slot) = &child_slot {
-        *slot.lock().unwrap() = Some(child.id());
+        *slot.lock() = Some(child.id());
     }
 
     let stdout = child
@@ -431,7 +432,7 @@ fn run_ffmpeg(
         .map_err(|e| format!("ffmpeg wait failed: {e}"))?;
 
     if let Some(slot) = &child_slot {
-        *slot.lock().unwrap() = None;
+        *slot.lock() = None;
     }
 
     if !status.success() {

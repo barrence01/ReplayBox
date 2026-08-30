@@ -76,11 +76,59 @@ pub fn resolve_folder_in_watch_dir(watch_dir: &str, folder_path: &str) -> Result
     Ok(folder)
 }
 
-/// Index or refresh a single recording.
+fn load_existing_recording(state: &AppState, abs_str: &str) -> Result<Option<Recording>, String> {
+    let conn = state.db.lock();
+    db::get_recording_by_path(&conn, abs_str)
+}
+
+fn persist_recording(state: &AppState, rec: &Recording) -> Result<(), String> {
+    let conn = state.db.lock();
+    db::upsert_recording(&conn, rec)
+}
+
+fn build_recording_from_probe(
+    id: String,
+    abs: &Path,
+    abs_str: String,
+    created_at: Option<String>,
+    modified_at: Option<String>,
+    size_bytes: Option<i64>,
+    probe: ProbeInfo,
+    thumbnail_path: Option<String>,
+) -> Recording {
+    let filename = abs
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let dir = abs
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    Recording {
+        id,
+        path: abs_str,
+        filename,
+        dir,
+        size_bytes,
+        duration_ms: probe.duration_ms,
+        width: probe.width,
+        height: probe.height,
+        video_codec: probe.video_codec,
+        audio_codec: probe.audio_codec,
+        is_vfr: probe.is_vfr,
+        created_at,
+        modified_at,
+        thumbnail_path,
+        session_id: None,
+        indexed_at: Utc::now().to_rfc3339(),
+    }
+}
+
 pub fn index_file(
-    conn: &rusqlite::Connection,
+    state: &AppState,
     settings: &Settings,
-    paths: &AppPaths,
     path: &Path,
 ) -> Result<Recording, String> {
     if !path.is_file() || !is_video_file(path) {
@@ -92,7 +140,7 @@ pub fn index_file(
         .unwrap_or_else(|_| path.to_path_buf());
     let abs_str = abs.to_string_lossy().to_string();
 
-    let existing = db::get_recording_by_path(conn, &abs_str)?;
+    let existing = load_existing_recording(state, &abs_str)?;
     let (created_at, modified_at, size_bytes) = file_times(&abs);
 
     if let Some(ref rec) = existing {
@@ -109,7 +157,7 @@ pub fn index_file(
 
     let probe = ffmpeg::probe(&settings.ffprobe_path, &abs)?;
 
-    let thumbs = paths.thumbs_dir();
+    let thumbs = state.paths.thumbs_dir();
     fs::create_dir_all(&thumbs).map_err(|e| e.to_string())?;
     let thumb_path = thumbs.join(format!("{id}.jpg"));
     let thumb_str = match ffmpeg::generate_thumbnail(
@@ -122,36 +170,18 @@ pub fn index_file(
         Err(_) => existing.and_then(|r| r.thumbnail_path),
     };
 
-    let filename = abs
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let dir = abs
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let rec = Recording {
+    let rec = build_recording_from_probe(
         id,
-        path: abs_str,
-        filename,
-        dir,
-        size_bytes,
-        duration_ms: probe.duration_ms,
-        width: probe.width,
-        height: probe.height,
-        video_codec: probe.video_codec,
-        audio_codec: probe.audio_codec,
-        is_vfr: probe.is_vfr,
+        &abs,
+        abs_str,
         created_at,
         modified_at,
-        thumbnail_path: thumb_str,
-        session_id: None,
-        indexed_at: Utc::now().to_rfc3339(),
-    };
+        size_bytes,
+        probe,
+        thumb_str,
+    );
 
-    db::upsert_recording(conn, &rec)?;
+    persist_recording(state, &rec)?;
     Ok(rec)
 }
 
@@ -171,8 +201,7 @@ fn index_paths(
 ) -> Result<usize, String> {
     let mut count = 0usize;
     for path in paths {
-        let conn = state.db.lock();
-        match index_file(&conn, settings, &state.paths, path) {
+        match index_file(state, settings, path) {
             Ok(_) => count += 1,
             Err(e) => tracing::warn!(path = %path.display(), error = %e, "index skipped"),
         }
@@ -360,6 +389,32 @@ mod tests {
         let under_a = db::list_recordings_under_dir(&conn, "/watch/GameA").unwrap();
         assert_eq!(under_a.len(), 2);
         assert!(under_a.iter().all(|r| r.dir.starts_with("/watch/GameA")));
+    }
+
+    #[test]
+    fn build_recording_from_probe_maps_path_fields() {
+        let rec = build_recording_from_probe(
+            "id-1".into(),
+            Path::new("/videos/clip.mp4"),
+            "/videos/clip.mp4".into(),
+            None,
+            Some("2024-01-02T00:00:00Z".into()),
+            Some(100),
+            ProbeInfo {
+                duration_ms: Some(1500.0),
+                width: Some(1920),
+                height: Some(1080),
+                video_codec: Some("h264".into()),
+                audio_codec: Some("aac".into()),
+                is_vfr: true,
+            },
+            None,
+        );
+        assert_eq!(rec.id, "id-1");
+        assert_eq!(rec.filename, "clip.mp4");
+        assert_eq!(rec.dir, "/videos");
+        assert_eq!(rec.duration_ms, Some(1500.0));
+        assert!(rec.is_vfr);
     }
 
     #[test]

@@ -340,4 +340,31 @@ describe("SettingsView watch folder access", () => {
       });
     });
   });
+
+  it("does not update cache stats after unmount", async () => {
+    let resolveStats: ((value: unknown) => void) | undefined;
+    getPlaybackCacheStatsMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStats = resolve;
+      }),
+    );
+
+    const { unmount } = render(
+      <SettingsView
+        settings={baseSettings}
+        tools={{ ffmpeg: true, ffprobe: true }}
+        onSave={async () => undefined}
+      />,
+    );
+
+    unmount();
+    resolveStats?.({
+      usedBytes: 99,
+      maxGb: 5,
+    });
+
+    await waitFor(() => {
+      expect(getPlaybackCacheLimitsMock).toHaveBeenCalled();
+    });
+  });
 });

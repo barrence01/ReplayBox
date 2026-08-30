@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRequestGeneration } from "../hooks/useRequestGeneration";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 import {
@@ -37,32 +38,55 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   const [messageIsError, setMessageIsError] = useState(false);
   const [resolved, setResolved] = useState({ ffmpeg: "", ffprobe: "" });
   const [nvencReady, setNvencReady] = useState<boolean | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const cacheClampAppliedRef = useRef(false);
+  const cacheInfoGen = useRequestGeneration();
+  const toolsProbeGen = useRequestGeneration();
+  const { nextGeneration: nextCacheGen, isCurrent: isCacheCurrent, invalidate: invalidateCacheGen } =
+    cacheInfoGen;
+  const {
+    nextGeneration: nextToolsGen,
+    isCurrent: isToolsCurrent,
+    invalidate: invalidateToolsGen,
+  } = toolsProbeGen;
 
   const refreshCacheInfo = useCallback(async () => {
+    const gen = nextCacheGen();
     const [nextLimits, nextStats] = await Promise.all([
       getPlaybackCacheLimits(),
       getPlaybackCacheStats(),
     ]);
+    if (!isCacheCurrent(gen)) {
+      return { nextLimits, nextStats };
+    }
     setLimits(nextLimits);
     setStats(nextStats);
     return { nextLimits, nextStats };
-  }, []);
+  }, [nextCacheGen, isCacheCurrent]);
 
   useEffect(() => {
     setDraft(settings);
   }, [settings]);
 
   useEffect(() => {
+    const gen = nextCacheGen();
     refreshCacheInfo().catch(() => {
+      if (!isCacheCurrent(gen)) {
+        return;
+      }
       setLimits(null);
       setStats(null);
     });
-  }, [refreshCacheInfo, settings.playbackCacheMaxGb]);
+    return () => {
+      invalidateCacheGen();
+    };
+  }, [refreshCacheInfo, settings.playbackCacheMaxGb, nextCacheGen, isCacheCurrent, invalidateCacheGen]);
 
   useEffect(() => {
-    if (!limits) {
+    if (!limits || cacheClampAppliedRef.current) {
       return;
     }
+    cacheClampAppliedRef.current = true;
     setDraft((current) => ({
       ...current,
       playbackCacheMaxGb: clampCacheGb(current.playbackCacheMaxGb, limits),
@@ -70,31 +94,71 @@ export function SettingsView({ settings, tools, onSave }: Props) {
   }, [limits]);
 
   useEffect(() => {
+    const gen = nextToolsGen();
     resolvedToolPaths()
-      .then(([ffmpeg, ffprobe]) => setResolved({ ffmpeg, ffprobe }))
-      .catch(() => setResolved({ ffmpeg: "", ffprobe: "" }));
+      .then(([ffmpeg, ffprobe]) => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setResolved({ ffmpeg, ffprobe });
+      })
+      .catch(() => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setResolved({ ffmpeg: "", ffprobe: "" });
+      });
     nvencAvailable()
-      .then(setNvencReady)
-      .catch(() => setNvencReady(null));
-  }, [settings, tools]);
+      .then((ready) => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setNvencReady(ready);
+      })
+      .catch(() => {
+        if (!isToolsCurrent(gen)) {
+          return;
+        }
+        setNvencReady(null);
+      });
+    return () => {
+      invalidateToolsGen();
+    };
+  }, [
+    settings.ffmpegPath,
+    settings.ffprobePath,
+    settings.preferNvenc,
+    tools,
+    nextToolsGen,
+    isToolsCurrent,
+    invalidateToolsGen,
+  ]);
 
   async function pickWatchDir() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Select recordings folder",
-    });
-    if (typeof selected !== "string") {
+    if (browsing) {
       return;
     }
+    setBrowsing(true);
     try {
-      await checkWatchDir(selected);
-      setDraft((d) => ({ ...d, watchDir: selected }));
-      setMessage(null);
-      setMessageIsError(false);
-    } catch (e) {
-      setMessage(String(e));
-      setMessageIsError(true);
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select recordings folder",
+      });
+      if (typeof selected !== "string") {
+        return;
+      }
+      try {
+        await checkWatchDir(selected);
+        setDraft((d) => ({ ...d, watchDir: selected }));
+        setMessage(null);
+        setMessageIsError(false);
+      } catch (e) {
+        setMessage(String(e));
+        setMessageIsError(true);
+      }
+    } finally {
+      setBrowsing(false);
     }
   }
 
@@ -238,7 +302,7 @@ export function SettingsView({ settings, tools, onSave }: Props) {
                   setDraft((d) => ({ ...d, watchDir: e.target.value }))
                 }
               />
-              <button type="button" onClick={pickWatchDir}>
+              <button type="button" onClick={() => void pickWatchDir()} disabled={browsing}>
                 Browse…
               </button>
             </div>
