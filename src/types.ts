@@ -50,7 +50,6 @@ export interface TrimRequest {
   trimMode?: TrimMode;
   crf?: number;
   useNvenc?: boolean;
-  fps?: number;
 }
 
 export interface CompressRequest {

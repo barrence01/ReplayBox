@@ -43,7 +43,6 @@ pub struct TrimRequest {
     pub trim_mode: String,
     pub crf: Option<u8>,
     pub use_nvenc: Option<bool>,
-    pub fps: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

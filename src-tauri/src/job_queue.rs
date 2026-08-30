@@ -326,7 +326,6 @@ mod tests {
                 trim_mode: "fast".into(),
                 crf: None,
                 use_nvenc: None,
-                fps: None,
             },
             dest: PathBuf::from("/tmp/out.mp4"),
         }
