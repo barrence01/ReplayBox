@@ -476,6 +476,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
+      // Do not re-issue seek while the browser/GStreamer is still seeking (HDD).
+      if (video.seeking) {
+        armSeekTimeout();
+        return;
+      }
+
       if (seekAttemptRef.current < LOCKED_SEEK_MAX_ATTEMPTS) {
         seekAttemptRef.current += 1;
         console.info(

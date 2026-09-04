@@ -35,12 +35,14 @@ export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void
   video.currentTime = targetSec;
 }
 
-export const SEEK_SETTLE_MS = 500;
-export const LOCKED_SEEK_MAX_ATTEMPTS = 20;
+/** Settle window for locked seeks; sized for ~5400 RPM HDD/WebKitGTK range seeks. */
+export const SEEK_SETTLE_MS = 2000;
+export const LOCKED_SEEK_MAX_ATTEMPTS = 5;
 /** Max wall-clock time for a locked seek before giving up. */
 export const SEEK_MAX_MS =
   LOCKED_SEEK_MAX_ATTEMPTS * SEEK_SETTLE_MS + SEEK_SETTLE_MS;
-export const SEEK_TOLERANCE_SEC = 0.2;
+/** Accept nearby keyframes from fastSeek (game recordings often key every ~2s). */
+export const SEEK_TOLERANCE_SEC = 1.5;
 
 export function isSeekAtTargetSec(
   currentSec: number,
