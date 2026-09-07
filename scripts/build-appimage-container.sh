@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build ReplayBox AppImage inside Ubuntu 22.04 via Podman (rootless) or Docker.
+# Build ReplayBox AppImage inside Ubuntu 24.04 via Podman (rootless) or Docker.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,7 +19,7 @@ usage() {
   cat <<EOF
 Usage: build-appimage-container.sh [OPTIONS] [-- EXTRA_ARGS_FOR_BUILD_APPIMAGE]
 
-Build ReplayBox AppImage in Ubuntu 22.04 (Podman rootless preferred, Docker fallback).
+Build ReplayBox AppImage in Ubuntu 24.04 (Podman rootless preferred, Docker fallback).
 
 Options:
   --rebuild-image   Force rebuild of the container image

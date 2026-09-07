@@ -21,7 +21,7 @@ npm run build:all
 
 ### AppImage
 
-**Recommended:** build inside Ubuntu 22.04 via Podman or Docker for a portable AppImage (glibc 2.35 baseline, works on Arch and Ubuntu):
+**Recommended:** build inside Ubuntu 24.04 via Podman or Docker for a portable AppImage (glibc 2.39 baseline; works on Arch and Ubuntu 24.04+, requires glibc ≥ 2.39):
 
 ```bash
 chmod +x scripts/build-appimage-container.sh   # once
@@ -34,7 +34,7 @@ Or via npm:
 npm run build:appimage:container
 ```
 
-Requires only **Podman** (rootless, preferred) or **Docker** on the host — no Tauri/GStreamer packages needed locally. The container image includes **Node.js 20 LTS** (Ubuntu apt ships Node 12, which is too old for Tauri CLI). First run builds the container image and may take a while (FFmpeg + Rust + linuxdeploy); later runs reuse caches under `.cache/`.
+Requires only **Podman** (rootless, preferred) or **Docker** on the host — no Tauri/GStreamer packages needed locally. The container image includes **Node.js 22 LTS** (Ubuntu 24.04 apt ships Node 18, which is too old for Tauri CLI). First run builds the container image and may take a while (FFmpeg + Rust + linuxdeploy); later runs reuse caches under `.cache/`.
 
 Options:
 
@@ -47,7 +47,7 @@ VERBOSE=1 ./scripts/build-appimage-container.sh         # verbose AppImage log
 | | Container build | Native host build |
 | --- | --- | --- |
 | Host deps | Podman or Docker only | Full Tauri/GStreamer stack |
-| glibc baseline | Ubuntu 22.04 (portable) | Depends on host distro |
+| glibc baseline | Ubuntu 24.04 / glibc 2.39 (portable on ≥2.39 hosts) | Depends on host distro |
 | Command | `npm run build:appimage:container` | `npm run build:appimage` |
 
 **Native host build** (advanced — inherits host libraries):
@@ -266,12 +266,12 @@ sudo apt update && sudo apt install -y \
   xdg-utils
 ```
 
-Node.js **20+** (Tauri 2 / Vite 7). Do not use Ubuntu apt `nodejs` on 22.04 (Node 12):
+Node.js **20+** (Tauri 2 / Vite 7). Do not use Ubuntu apt `nodejs` on 24.04 (Node 18):
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
-node --version   # v20.x or newer
+node --version   # v22.x or newer
 ```
 
 On Ubuntu 24.04+, `libfuse2` may install as `libfuse2t64`. linuxdeploy is itself an AppImage and needs `libfuse.so.2`, or extract-and-run (`APPIMAGE_EXTRACT_AND_RUN=1`, which `build-appimage.sh` sets).
@@ -352,7 +352,7 @@ Settings shows compiled vs runtime status for each backend. Preview prefers hard
 | `npm run tauri:build`                                    | FFmpeg + production Tauri build                             |
 | `npm run build:all` / `./scripts/build-all.sh`           | Full check + install + FFmpeg + production build            |
 | `npm run build:appimage` / `./scripts/build-appimage.sh` | Checks + curated GST staging + AppImage → `build/` (native host) |
-| `npm run build:appimage:container` / `./scripts/build-appimage-container.sh` | Same via Ubuntu 22.04 container (recommended) |
+| `npm run build:appimage:container` / `./scripts/build-appimage-container.sh` | Same via Ubuntu 24.04 container (recommended) |
 | `VERBOSE=1 ./scripts/build-appimage.sh`                  | Same; also mirrors the (always verbose) Tauri/linuxdeploy log to the terminal |
 
 

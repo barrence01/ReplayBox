@@ -327,10 +327,10 @@ Rust on Ubuntu (install rustup, then reopen the shell or run `source "$HOME/.car
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Node.js **20+** is required (Tauri 2 / Vite 7). Ubuntu apt may ship Node 12 — use NodeSource or nvm:
+Node.js **20+** is required (Tauri 2 / Vite 7). Ubuntu apt may ship an older Node — use NodeSource or nvm:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 node --version   # should be v20.x or newer
 ```
