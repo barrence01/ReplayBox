@@ -31,7 +31,7 @@ import {
   ScissorsIcon,
 } from "../components/icons";
 import { clampPlayheadMs } from "../lib/timelinePosition";
-import { SEEK_TOLERANCE_SEC } from "../lib/videoSeek";
+import { SCRUB_SEEK_TOLERANCE_SEC } from "../lib/videoSeek";
 
 type CopyCollision = "overwrite" | "unique";
 
@@ -213,7 +213,7 @@ export function EditorView({
 
     if (timelineLocked) return;
     const videoMs = playerRef.current?.getCurrentMs() ?? 0;
-    if (Math.abs(videoMs - target) > SEEK_TOLERANCE_SEC * 1000) {
+    if (Math.abs(videoMs - target) > SCRUB_SEEK_TOLERANCE_SEC * 1000) {
       playerRef.current?.seekAndLock(target);
     }
   }

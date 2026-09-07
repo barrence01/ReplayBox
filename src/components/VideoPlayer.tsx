@@ -13,7 +13,7 @@ import { isPlayInterruptedError } from "../lib/videoPlayback";
 import {
   LOCKED_SEEK_MAX_ATTEMPTS,
   SEEK_MAX_MS,
-  SEEK_SETTLE_MS,
+  SEEK_POLL_MS,
   applyScrubSeek,
   applyVideoSeek,
   clampToSeekableSec,
@@ -452,8 +452,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       const atTarget = isSeekAtTargetSec(video.currentTime, targetSec);
       if (atTarget) {
         if (video.seeking) {
-          const startedAt = seekStartedAtRef.current ?? Date.now();
-          if (Date.now() - startedAt >= SEEK_MAX_MS) {
+          const startedAt = seekStartedAtRef.current ?? performance.now();
+          if (performance.now() - startedAt >= SEEK_MAX_MS) {
             completeSeek(resumeAfterSeekRef.current);
             return;
           }
@@ -466,27 +466,28 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
-      if (!fromTimeout) {
-        return;
-      }
-
-      const startedAt = seekStartedAtRef.current ?? Date.now();
-      if (Date.now() - startedAt >= SEEK_MAX_MS) {
+      const startedAt = seekStartedAtRef.current ?? performance.now();
+      if (performance.now() - startedAt >= SEEK_MAX_MS) {
         failSeek();
         return;
       }
 
-      if (seekAttemptRef.current < LOCKED_SEEK_MAX_ATTEMPTS) {
-        seekAttemptRef.current += 1;
-        console.info(
-          `[ReplayBox seek] ${new Date().toISOString()} attempt ${seekAttemptRef.current}/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
-        );
-        applyVideoSeek(video, targetSec);
+      if (video.seeking) {
         armSeekTimeout();
         return;
       }
 
-      failSeek();
+      if (seekAttemptRef.current >= LOCKED_SEEK_MAX_ATTEMPTS) {
+        failSeek();
+        return;
+      }
+
+      seekAttemptRef.current += 1;
+      console.info(
+        `[ReplayBox seek] ${new Date().toISOString()} attempt ${seekAttemptRef.current}/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
+      );
+      applyVideoSeek(video, targetSec);
+      armSeekTimeout();
     }
 
     function armSeekTimeout() {
@@ -496,7 +497,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         if (isSeekingRef.current) {
           settleSeek(true);
         }
-      }, SEEK_SETTLE_MS);
+      }, SEEK_POLL_MS);
     }
 
     function applyLockedVideoSeek(
@@ -516,9 +517,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       seekAttemptRef.current = 1;
       armSeekTimeout();
       console.info(
-        `[ReplayBox seek] ${new Date().toISOString()} attempt 1/${LOCKED_SEEK_MAX_ATTEMPTS} via fastSeek target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
+        `[ReplayBox seek] ${new Date().toISOString()} attempt 1/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
       );
-      applyScrubSeek(video, targetSec);
+      applyVideoSeek(video, targetSec);
     }
 
     function beginVideoSeek(video: HTMLVideoElement, targetMs: number) {
@@ -550,7 +551,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       pendingSeekMsRef.current = clamped;
       seekTargetMsRef.current = clamped;
       seekAttemptRef.current = 0;
-      seekStartedAtRef.current = Date.now();
+      seekStartedAtRef.current = performance.now();
       isSeekingRef.current = true;
 
       const video = videoRef.current;
@@ -578,7 +579,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       pendingSeekMsRef.current = clamped;
       seekTargetMsRef.current = clamped;
       seekAttemptRef.current = 0;
-      seekStartedAtRef.current = Date.now();
+      seekStartedAtRef.current = performance.now();
       isSeekingRef.current = true;
 
       const video = videoRef.current;
@@ -992,7 +993,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
               const resume = resumeAfterSeekRef.current;
               seekTargetMsRef.current = clamped;
               seekAttemptRef.current = 0;
-              seekStartedAtRef.current = Date.now();
+              seekStartedAtRef.current = performance.now();
               isSeekingRef.current = true;
               if (video && video.readyState >= 1) {
                 applyLockedVideoSeek(video, clamped, resume);

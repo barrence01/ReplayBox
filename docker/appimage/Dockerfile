@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-# ReplayBox AppImage builder — Ubuntu 22.04 LTS (glibc 2.35 baseline).
+# ReplayBox AppImage builder — Ubuntu 24.04 LTS (glibc 2.39 baseline).
 # Repository is bind-mounted at /work at runtime; only entrypoint is copied here.
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 LABEL org.replaybox.appimage-builder=1
 
@@ -46,8 +46,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20 LTS — Ubuntu apt ships Node 12; Tauri 2 / Vite 7 require Node 20+.
-ARG NODE_MAJOR=20
+# Node.js 22 LTS — Ubuntu apt ships Node 18; Tauri 2 / Vite 7 require Node 20+.
+ARG NODE_MAJOR=22
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \

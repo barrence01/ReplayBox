@@ -35,17 +35,24 @@ export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void
   video.currentTime = targetSec;
 }
 
-export const SEEK_SETTLE_MS = 500;
-export const LOCKED_SEEK_MAX_ATTEMPTS = 20;
-/** Max wall-clock time for a locked seek before giving up. */
-export const SEEK_MAX_MS =
-  LOCKED_SEEK_MAX_ATTEMPTS * SEEK_SETTLE_MS + SEEK_SETTLE_MS;
-export const SEEK_TOLERANCE_SEC = 0.2;
+/**
+ * Interval used to re-check an in-flight locked seek while the engine is
+ * still seeking. Not a retry delay — completed seeks retry immediately.
+ */
+export const SEEK_POLL_MS = 300;
+/** Caps rapid retry loops when seeked fires repeatedly off-target. */
+export const LOCKED_SEEK_MAX_ATTEMPTS = 10;
+/** Max elapsed time for a locked seek before giving up. */
+export const SEEK_MAX_MS = 10_000;
+/** Precision tolerance for locked seeks using currentTime. */
+export const LOCKED_SEEK_TOLERANCE_SEC = 0.05;
+/** Coarse tolerance used to skip a redundant seekAndLock call. */
+export const SCRUB_SEEK_TOLERANCE_SEC = 1.5;
 
 export function isSeekAtTargetSec(
   currentSec: number,
   targetSec: number,
-  toleranceSec = SEEK_TOLERANCE_SEC,
+  toleranceSec = LOCKED_SEEK_TOLERANCE_SEC,
 ): boolean {
   return Math.abs(currentSec - targetSec) <= toleranceSec;
 }
