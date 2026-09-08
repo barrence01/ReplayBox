@@ -13,7 +13,7 @@ import { isPlayInterruptedError } from "../lib/videoPlayback";
 import {
   LOCKED_SEEK_MAX_ATTEMPTS,
   SEEK_MAX_MS,
-  SEEK_POLL_MS,
+  SEEK_SETTLE_MS,
   applyScrubSeek,
   applyVideoSeek,
   clampToSeekableSec,
@@ -457,12 +457,17 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
             completeSeek(resumeAfterSeekRef.current);
             return;
           }
-          if (fromTimeout) {
-            armSeekTimeout();
-          }
+          // Always re-arm (unlike v0.1.1, which only did so on fromTimeout)
+          // so a stuck seeking=true cannot deadlock the locked seek.
+          armSeekTimeout();
           return;
         }
         completeSeek(resumeAfterSeekRef.current);
+        return;
+      }
+
+      // Off-target seeked: wait for settle timer before retrying (HDD).
+      if (!fromTimeout) {
         return;
       }
 
@@ -472,22 +477,23 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
+      // Do not re-issue currentTime while the engine is still seeking.
       if (video.seeking) {
         armSeekTimeout();
         return;
       }
 
-      if (seekAttemptRef.current >= LOCKED_SEEK_MAX_ATTEMPTS) {
-        failSeek();
+      if (seekAttemptRef.current < LOCKED_SEEK_MAX_ATTEMPTS) {
+        seekAttemptRef.current += 1;
+        console.info(
+          `[ReplayBox seek] ${new Date().toISOString()} attempt ${seekAttemptRef.current}/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
+        );
+        applyVideoSeek(video, targetSec);
+        armSeekTimeout();
         return;
       }
 
-      seekAttemptRef.current += 1;
-      console.info(
-        `[ReplayBox seek] ${new Date().toISOString()} attempt ${seekAttemptRef.current}/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
-      );
-      applyVideoSeek(video, targetSec);
-      armSeekTimeout();
+      failSeek();
     }
 
     function armSeekTimeout() {
@@ -497,7 +503,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         if (isSeekingRef.current) {
           settleSeek(true);
         }
-      }, SEEK_POLL_MS);
+      }, SEEK_SETTLE_MS);
     }
 
     function applyLockedVideoSeek(
@@ -516,10 +522,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
       seekAttemptRef.current = 1;
       armSeekTimeout();
+      const via =
+        typeof video.fastSeek === "function" ? "fastSeek" : "currentTime";
       console.info(
-        `[ReplayBox seek] ${new Date().toISOString()} attempt 1/${LOCKED_SEEK_MAX_ATTEMPTS} via currentTime target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
+        `[ReplayBox seek] ${new Date().toISOString()} attempt 1/${LOCKED_SEEK_MAX_ATTEMPTS} via ${via} target=${targetSec.toFixed(3)}s current=${video.currentTime.toFixed(3)}s`,
       );
-      applyVideoSeek(video, targetSec);
+      applyScrubSeek(video, targetSec);
     }
 
     function beginVideoSeek(video: HTMLVideoElement, targetMs: number) {
