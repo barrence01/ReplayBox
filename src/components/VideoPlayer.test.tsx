@@ -1965,13 +1965,12 @@ describe("VideoPlayer", () => {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
-    let assignedSec = 0;
     let reportedSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
       get: () => reportedSec,
-      set: (value: number) => {
-        assignedSec = value;
+      set: () => {
+        // Locked seek uses fastSeek; currentTime must not be assigned here.
       },
     });
 
