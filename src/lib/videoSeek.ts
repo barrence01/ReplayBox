@@ -57,6 +57,30 @@ export function seekableCoversSec(
   return false;
 }
 
+/**
+ * Whether it is safe to assign currentTime for a locked seek.
+ * Waits for seekable coverage when only a tiny early range exists (HDD / progressive HTTP).
+ * Escape: empty seekable + HAVE_FUTURE_DATA — some WebKit builds report empty seekable when ready.
+ */
+export function canApplyLockedSeek(
+  video: Pick<HTMLVideoElement, "readyState" | "seekable">,
+  targetSec: number,
+): boolean {
+  if (video.readyState < 1) {
+    return false;
+  }
+  if (seekableCoversSec(video.seekable, targetSec)) {
+    return true;
+  }
+  if (
+    video.seekable.length === 0 &&
+    video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Assign currentTime; used for locked seeks (precise positioning). */
 export function applyVideoSeek(video: HTMLVideoElement, targetSec: number): void {
   video.currentTime = targetSec;

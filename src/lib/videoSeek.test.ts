@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   applyScrubSeek,
+  canApplyLockedSeek,
   clampToSeekableSec,
   isSeekAtTargetSec,
   resolveLockedSeekTargetSec,
@@ -61,6 +62,48 @@ describe("seekableCoversSec", () => {
 
   it("is true when covered", () => {
     expect(seekableCoversSec(mockSeekable([[0, 100]]), 8)).toBe(true);
+  });
+});
+
+describe("canApplyLockedSeek", () => {
+  it("is false when readyState is below HAVE_METADATA", () => {
+    const video = {
+      readyState: 0,
+      seekable: mockSeekable([[0, 100]]),
+    } as unknown as HTMLVideoElement;
+    expect(canApplyLockedSeek(video, 8)).toBe(false);
+  });
+
+  it("is true when seekable covers the target", () => {
+    const video = {
+      readyState: 1,
+      seekable: mockSeekable([[0, 100]]),
+    } as unknown as HTMLVideoElement;
+    expect(canApplyLockedSeek(video, 8)).toBe(true);
+  });
+
+  it("is false when only a tiny early range exists", () => {
+    const video = {
+      readyState: 1,
+      seekable: mockSeekable([[0, 0.05]]),
+    } as unknown as HTMLVideoElement;
+    expect(canApplyLockedSeek(video, 8)).toBe(false);
+  });
+
+  it("allows empty seekable once HAVE_FUTURE_DATA", () => {
+    const video = {
+      readyState: HTMLMediaElement.HAVE_FUTURE_DATA,
+      seekable: mockSeekable([]),
+    } as unknown as HTMLVideoElement;
+    expect(canApplyLockedSeek(video, 8)).toBe(true);
+  });
+
+  it("rejects empty seekable before HAVE_FUTURE_DATA", () => {
+    const video = {
+      readyState: HTMLMediaElement.HAVE_METADATA,
+      seekable: mockSeekable([]),
+    } as unknown as HTMLVideoElement;
+    expect(canApplyLockedSeek(video, 8)).toBe(false);
   });
 });
 
