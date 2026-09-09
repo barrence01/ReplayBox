@@ -2,15 +2,17 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { VideoPlayer, type VideoPlayerHandle } from "../components/VideoPlayer";
-import { SEEK_MAX_MS, SEEK_SETTLE_MS } from "../lib/videoSeek";
+import { SEEK_MAX_MS, SEEK_SETTLE_MS, HDD_SEEK_GRACE_MS } from "../lib/videoSeek";
 
 const getPlaybackInfoMock = vi.fn();
 const prioritizePreviewForRecordingMock = vi.fn();
+const logPlaybackMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   getPlaybackInfo: (...args: unknown[]) => getPlaybackInfoMock(...args),
   prioritizePreviewForRecording: (...args: unknown[]) =>
     prioritizePreviewForRecordingMock(...args),
+  logPlayback: (...args: unknown[]) => logPlaybackMock(...args),
 }));
 
 describe("VideoPlayer", () => {
@@ -23,6 +25,7 @@ describe("VideoPlayer", () => {
     getPlaybackInfoMock.mockReset();
     prioritizePreviewForRecordingMock.mockReset();
     prioritizePreviewForRecordingMock.mockResolvedValue({ id: "job-1" });
+    logPlaybackMock.mockReset();
 
     Object.defineProperty(HTMLMediaElement.prototype, "play", {
       configurable: true,
@@ -1037,6 +1040,143 @@ describe("VideoPlayer", () => {
       const video = container.querySelector("video");
       expect(video?.getAttribute("preload")).toBe("auto");
     });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    act(() => {
+      video.dispatchEvent(new Event("loadeddata"));
+    });
+
+    await waitFor(() => {
+      expect(video.getAttribute("preload")).toBe("metadata");
+    });
+  });
+
+  it("arms pending seek when readyState is below HAVE_METADATA", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      mode: "cache",
+    });
+
+    const onSeekingChange = vi.fn();
+    const ref = createRef<VideoPlayerHandle>();
+    const { container } = render(
+      <VideoPlayer
+        ref={ref}
+        recordingId="rec-1"
+        startMs={0}
+        endMs={10_000}
+        onTimeUpdate={() => undefined}
+        onPlayingChange={() => undefined}
+        onSeekingChange={onSeekingChange}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    Object.defineProperty(video, "readyState", { configurable: true, value: 0 });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
+    let currentTimeSec = 0;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => currentTimeSec,
+      set: (value: number) => {
+        currentTimeSec = value;
+      },
+    });
+
+    ref.current?.seekAndLock(8000);
+    expect(onSeekingChange).toHaveBeenCalledWith(true);
+    expect(currentTimeSec).toBe(0);
+    expect(logPlaybackMock).toHaveBeenCalledWith(
+      "info",
+      "seek.pending",
+      expect.objectContaining({ reason: "awaiting_media" }),
+    );
+
+    Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+    Object.defineProperty(video, "seekable", {
+      configurable: true,
+      value: { length: 1, start: () => 0, end: () => 10 },
+    });
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    act(() => {
+      video.dispatchEvent(new Event("loadedmetadata"));
+    });
+
+    expect(currentTimeSec).toBe(8);
+    expect(logPlaybackMock).toHaveBeenCalledWith(
+      "info",
+      "seek.apply",
+      expect.objectContaining({ via: "currentTime" }),
+    );
+  });
+
+  it("keeps mid-file locked seek target when seekable is still a tiny early range", async () => {
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      mode: "cache",
+    });
+
+    const onSeekingChange = vi.fn();
+    const onTimeUpdate = vi.fn();
+    const ref = createRef<VideoPlayerHandle>();
+    const { container } = render(
+      <VideoPlayer
+        ref={ref}
+        recordingId="rec-1"
+        startMs={0}
+        endMs={120_000}
+        onTimeUpdate={onTimeUpdate}
+        onPlayingChange={() => undefined}
+        onSeekingChange={onSeekingChange}
+        onError={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("video")).toBeTruthy();
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
+    Object.defineProperty(video, "seekable", {
+      configurable: true,
+      value: { length: 1, start: () => 0, end: () => 0.05 },
+    });
+    let currentTimeSec = 0;
+    const assignedSec: number[] = [];
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => currentTimeSec,
+      set: (value: number) => {
+        assignedSec.push(value);
+      },
+    });
+    Object.defineProperty(video, "duration", { configurable: true, value: 120 });
+    video.dispatchEvent(new Event("loadedmetadata"));
+
+    ref.current?.seekAndLock(8000);
+    expect(assignedSec).toEqual([8]);
+    expect(onSeekingChange).toHaveBeenLastCalledWith(true);
+
+    // Must not treat currentTime≈0 as success against a clamped 0.05s target.
+    act(() => {
+      video.dispatchEvent(new Event("seeked"));
+    });
+    expect(onSeekingChange).toHaveBeenLastCalledWith(true);
+    expect(onTimeUpdate).not.toHaveBeenCalled();
   });
 
   it("waits for target when seeked fires before currentTime updates", async () => {
@@ -1157,6 +1297,7 @@ describe("VideoPlayer", () => {
     });
 
     const onTimeUpdate = vi.fn();
+    const onSeekingChange = vi.fn();
     const ref = createRef<VideoPlayerHandle>();
     const { container } = render(
       <VideoPlayer
@@ -1166,6 +1307,7 @@ describe("VideoPlayer", () => {
         endMs={10_000}
         onTimeUpdate={onTimeUpdate}
         onPlayingChange={() => undefined}
+        onSeekingChange={onSeekingChange}
         onError={() => undefined}
       />,
     );
@@ -1176,29 +1318,39 @@ describe("VideoPlayer", () => {
 
     const video = container.querySelector("video") as HTMLVideoElement;
     Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
     Object.defineProperty(video, "seekable", {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
-    let stuckTimeSec = 1;
+    let stuckTimeSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
       get: () => stuckTimeSec,
       set: () => undefined,
     });
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    video.dispatchEvent(new Event("loadedmetadata"));
+    stuckTimeSec = 1;
 
     onTimeUpdate.mockClear();
-    ref.current?.seekTo(5000);
+    // Use seekAndLock so UI lock + snap path are exercised (seekTo does not lock UI).
+    ref.current?.seekAndLock(5000);
     expect(onTimeUpdate).not.toHaveBeenCalled();
+    expect(onSeekingChange).toHaveBeenCalledWith(true);
 
     onTimeUpdate.mockClear();
     video.dispatchEvent(new Event("timeupdate"));
     expect(onTimeUpdate).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 100);
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 500);
     });
 
+    expect(onSeekingChange).toHaveBeenLastCalledWith(false);
     expect(onTimeUpdate).toHaveBeenCalledWith(1000);
 
     onTimeUpdate.mockClear();
@@ -1710,7 +1862,7 @@ describe("VideoPlayer", () => {
     expect(fastSeek).toHaveBeenLastCalledWith(8);
   });
 
-  it("endScrubAndLock uses fastSeek for locked seek", async () => {
+  it("endScrubAndLock uses currentTime for locked seek", async () => {
     getPlaybackInfoMock.mockResolvedValue({
       url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
       mode: "cache",
@@ -1744,6 +1896,10 @@ describe("VideoPlayer", () => {
       configurable: true,
       get: () => true,
     });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
     Object.defineProperty(video, "seekable", {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
@@ -1764,8 +1920,8 @@ describe("VideoPlayer", () => {
     fastSeek.mockClear();
 
     ref.current?.endScrubAndLock(5000);
-    expect(fastSeek).toHaveBeenCalledWith(5);
-    expect(assignedSec).toEqual([]);
+    expect(fastSeek).not.toHaveBeenCalled();
+    expect(assignedSec).toEqual([5]);
   });
 
   it("endScrubAndLock early-completes when already near target", async () => {
@@ -2130,7 +2286,7 @@ describe("VideoPlayer", () => {
     expect(onTimeUpdate).toHaveBeenCalledWith(2500);
   });
 
-  it("seekAndLock retries currentTime on poll after bad seeked (no immediate abort)", async () => {
+  it("seekAndLock retries currentTime after HDD grace (no immediate abort)", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     getPlaybackInfoMock.mockResolvedValue({
@@ -2184,22 +2340,28 @@ describe("VideoPlayer", () => {
     });
 
     ref.current?.seekAndLock(2500);
-    expect(fastSeek).toHaveBeenCalledWith(2.5);
-    expect(assignedSec).toEqual([]);
+    expect(fastSeek).not.toHaveBeenCalled();
+    expect(assignedSec).toEqual([2.5]);
     expect(onSeekingChange).toHaveBeenCalledWith(true);
 
     act(() => {
       video.dispatchEvent(new Event("seeked"));
     });
     // Premature off-target seeked must not re-issue immediately (HDD).
-    expect(assignedSec).toEqual([]);
+    expect(assignedSec).toEqual([2.5]);
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
     expect(onTimeUpdate).not.toHaveBeenCalled();
 
     act(() => {
       vi.advanceTimersByTime(SEEK_SETTLE_MS);
     });
+    // Still within HDD grace — no second assignment yet.
     expect(assignedSec).toEqual([2.5]);
+
+    act(() => {
+      vi.advanceTimersByTime(HDD_SEEK_GRACE_MS);
+    });
+    expect(assignedSec).toEqual([2.5, 2.5]);
 
     currentTimeSec = 2.5;
     act(() => {
@@ -2210,7 +2372,7 @@ describe("VideoPlayer", () => {
     expect(onTimeUpdate).toHaveBeenCalledWith(2500);
   });
 
-  it("failSeek reports actual currentTime after exhausted retries", async () => {
+  it("snapSeek reports actual currentTime after wall-clock timeout (no remux)", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     getPlaybackInfoMock.mockResolvedValue({
@@ -2237,11 +2399,6 @@ describe("VideoPlayer", () => {
     });
 
     const video = container.querySelector("video") as HTMLVideoElement;
-    const fastSeek = vi.fn();
-    Object.defineProperty(video, "fastSeek", {
-      configurable: true,
-      value: fastSeek,
-    });
     Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
     Object.defineProperty(video, "seeking", {
       configurable: true,
@@ -2251,24 +2408,31 @@ describe("VideoPlayer", () => {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
-    let currentTimeSec = 1.2;
+    let currentTimeSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
       get: () => currentTimeSec,
       set: () => undefined,
     });
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    video.dispatchEvent(new Event("loadedmetadata"));
+    currentTimeSec = 1.2;
 
     ref.current?.seekAndLock(8000);
 
-    act(() => {
-      vi.advanceTimersByTime(SEEK_MAX_MS + 500);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 500);
     });
 
     expect(onTimeUpdate).toHaveBeenCalledWith(1200);
     expect(onTimeUpdate).not.toHaveBeenCalledWith(8000);
+    expect(getPlaybackInfoMock).not.toHaveBeenCalledWith("rec-1", {
+      forceFallback: true,
+      fallbackLevel: expect.anything(),
+    });
   });
 
-  it("waits while video.seeking before retrying locked seek", async () => {
+  it("respects HDD grace while video.seeking before retrying locked seek", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     getPlaybackInfoMock.mockResolvedValue({
@@ -2323,21 +2487,22 @@ describe("VideoPlayer", () => {
     });
 
     ref.current?.seekAndLock(8000);
-    expect(fastSeek).toHaveBeenCalledWith(8);
-    expect(assignedSec).toEqual([]);
+    expect(fastSeek).not.toHaveBeenCalled();
+    expect(assignedSec).toEqual([8]);
     expect(onSeekingChange).toHaveBeenCalledWith(true);
 
     act(() => {
-      vi.advanceTimersByTime(SEEK_SETTLE_MS);
+      vi.advanceTimersByTime(HDD_SEEK_GRACE_MS + SEEK_SETTLE_MS);
     });
-    expect(assignedSec).toEqual([]);
+    // Still seeking — must not re-issue.
+    expect(assignedSec).toEqual([8]);
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
     seeking = false;
     act(() => {
       vi.advanceTimersByTime(SEEK_SETTLE_MS);
     });
-    expect(assignedSec).toEqual([8]);
+    expect(assignedSec).toEqual([8, 8]);
 
     currentTimeSec = 8;
     act(() => {
@@ -2348,20 +2513,16 @@ describe("VideoPlayer", () => {
     expect(onTimeUpdate).toHaveBeenCalledWith(8000);
   });
 
-  it("requests stream copy fallback when locked seek fails in direct mode", async () => {
+  it("does not request stream copy fallback when locked seek times out in direct mode", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
-    getPlaybackInfoMock
-      .mockResolvedValueOnce({
-        url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
-        mode: "direct",
-      })
-      .mockResolvedValue({
-        url: "http://127.0.0.1:1/media?path=%2Fcache.mp4",
-        mode: "cache",
-      });
+    getPlaybackInfoMock.mockResolvedValue({
+      url: "http://127.0.0.1:1/media?path=%2Fclip.mp4",
+      mode: "direct",
+    });
 
     const onTimeUpdate = vi.fn();
+    const onSeekingChange = vi.fn();
     const ref = createRef<VideoPlayerHandle>();
     const { container } = render(
       <VideoPlayer
@@ -2371,6 +2532,7 @@ describe("VideoPlayer", () => {
         endMs={10_000}
         onTimeUpdate={onTimeUpdate}
         onPlayingChange={() => undefined}
+        onSeekingChange={onSeekingChange}
         onError={() => undefined}
       />,
     );
@@ -2380,10 +2542,6 @@ describe("VideoPlayer", () => {
     });
 
     const video = container.querySelector("video") as HTMLVideoElement;
-    Object.defineProperty(video, "fastSeek", {
-      configurable: true,
-      value: vi.fn(),
-    });
     Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
     Object.defineProperty(video, "seeking", {
       configurable: true,
@@ -2393,53 +2551,31 @@ describe("VideoPlayer", () => {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
+    let reportedSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
-      get: () => 1.2,
+      get: () => reportedSec,
       set: () => undefined,
     });
 
+    getPlaybackInfoMock.mockClear();
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    video.dispatchEvent(new Event("loadedmetadata"));
+    reportedSec = 1.2;
     ref.current?.seekAndLock(8000);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 500);
     });
 
-    await waitFor(() => {
-      expect(getPlaybackInfoMock).toHaveBeenCalledWith("rec-1", {
-        forceFallback: true,
-        fallbackLevel: 1,
-      });
-    });
-
-    await waitFor(() => {
-      const next = container.querySelector("video") as HTMLVideoElement;
-      expect(next.getAttribute("src")).toContain("cache.mp4");
-    });
-
-    const nextVideo = container.querySelector("video") as HTMLVideoElement;
-    Object.defineProperty(nextVideo, "readyState", {
-      configurable: true,
-      value: 2,
-    });
-    Object.defineProperty(nextVideo, "seekable", {
-      configurable: true,
-      value: { length: 1, start: () => 0, end: () => 10 },
-    });
-    let nextTimeSec = 0;
-    Object.defineProperty(nextVideo, "currentTime", {
-      configurable: true,
-      get: () => nextTimeSec,
-      set: (value: number) => {
-        nextTimeSec = value;
-      },
-    });
-
-    act(() => {
-      nextVideo.dispatchEvent(new Event("loadedmetadata"));
-    });
-
-    expect(nextTimeSec).toBe(8);
+    expect(onSeekingChange).toHaveBeenLastCalledWith(false);
+    expect(onTimeUpdate).toHaveBeenCalledWith(1200);
+    expect(getPlaybackInfoMock).not.toHaveBeenCalled();
+    expect(logPlaybackMock).toHaveBeenCalledWith(
+      "warn",
+      "seek.settle",
+      expect.objectContaining({ reason: "snap" }),
+    );
   });
 
   it("runs queued seek after the first locked seek completes", async () => {
@@ -2521,25 +2657,39 @@ describe("VideoPlayer", () => {
 
     const video = container.querySelector("video") as HTMLVideoElement;
     Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
     Object.defineProperty(video, "seekable", {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
+    let currentTimeSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
-      get: () => 0,
+      get: () => currentTimeSec,
       set: () => undefined,
     });
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    video.dispatchEvent(new Event("loadedmetadata"));
+    // Stay at 0 while seeking to 2.5s — never reaches target.
+    currentTimeSec = 0;
 
     ref.current?.seekAndLock(2500);
 
-    act(() => {
-      vi.advanceTimersByTime(SEEK_MAX_MS + 100);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 500);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
     expect(onTimeUpdate).toHaveBeenCalledWith(0);
     expect(onTimeUpdate).not.toHaveBeenCalledWith(2500);
+    expect(logPlaybackMock).toHaveBeenCalledWith(
+      "warn",
+      "seek.settle",
+      expect.objectContaining({ reason: "snap" }),
+    );
   });
 
   it("endScrubAndLock supersedes an active locked seek", async () => {
@@ -2620,20 +2770,28 @@ describe("VideoPlayer", () => {
 
     const video = container.querySelector("video") as HTMLVideoElement;
     Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+    Object.defineProperty(video, "seeking", {
+      configurable: true,
+      get: () => false,
+    });
     Object.defineProperty(video, "seekable", {
       configurable: true,
       value: { length: 1, start: () => 0, end: () => 10 },
     });
+    let currentTimeSec = 0;
     Object.defineProperty(video, "currentTime", {
       configurable: true,
-      get: () => 1,
+      get: () => currentTimeSec,
       set: () => undefined,
     });
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    video.dispatchEvent(new Event("loadedmetadata"));
+    currentTimeSec = 1;
 
     ref.current?.seekAndLock(8000);
 
-    act(() => {
-      vi.advanceTimersByTime(SEEK_MAX_MS + 100);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + 500);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -2693,8 +2851,8 @@ describe("VideoPlayer", () => {
     });
 
     ref.current?.seekAndLock(5000);
-    expect(fastSeek).toHaveBeenCalledWith(5);
-    expect(assignedSec).toEqual([]);
+    expect(fastSeek).not.toHaveBeenCalled();
+    expect(assignedSec).toEqual([5]);
 
     currentTimeSec = 4.85;
     act(() => {
@@ -2703,7 +2861,7 @@ describe("VideoPlayer", () => {
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
     expect(onTimeUpdate).toHaveBeenCalledWith(4850);
-    expect(assignedSec).toEqual([]);
+    expect(assignedSec).toEqual([5]);
   });
 
   it("does not re-issue seek on premature off-target seeked (HDD)", async () => {
@@ -2760,25 +2918,31 @@ describe("VideoPlayer", () => {
     });
 
     ref.current?.seekAndLock(77_421);
-    expect(fastSeek).toHaveBeenCalledWith(77.421);
-    expect(assignedSec).toEqual([]);
+    expect(fastSeek).not.toHaveBeenCalled();
+    expect(assignedSec).toEqual([77.421]);
 
     // Premature seeked with unchanged currentTime must not abort/retry immediately.
     act(() => {
       video.dispatchEvent(new Event("seeked"));
     });
-    expect(assignedSec).toEqual([]);
+    expect(assignedSec).toEqual([77.421]);
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
     act(() => {
       video.dispatchEvent(new Event("seeked"));
     });
-    expect(assignedSec).toEqual([]);
+    expect(assignedSec).toEqual([77.421]);
 
     act(() => {
       vi.advanceTimersByTime(SEEK_SETTLE_MS);
     });
+    // Still within HDD grace.
     expect(assignedSec).toEqual([77.421]);
+
+    act(() => {
+      vi.advanceTimersByTime(HDD_SEEK_GRACE_MS);
+    });
+    expect(assignedSec).toEqual([77.421, 77.421]);
 
     currentTimeSec = 77.421;
     act(() => {
@@ -2787,7 +2951,7 @@ describe("VideoPlayer", () => {
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
     expect(onTimeUpdate).toHaveBeenCalledWith(77_421);
-    expect(assignedSec).toEqual([77.421]);
+    expect(assignedSec).toEqual([77.421, 77.421]);
   });
 
   it("completes locked seek at target after SEEK_MAX_MS if seeking stays true", async () => {
@@ -2836,6 +3000,8 @@ describe("VideoPlayer", () => {
         currentTimeSec = value;
       },
     });
+    Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+    video.dispatchEvent(new Event("loadedmetadata"));
 
     ref.current?.seekAndLock(2500);
     currentTimeSec = 2.5;
@@ -2844,8 +3010,8 @@ describe("VideoPlayer", () => {
     });
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
-    act(() => {
-      vi.advanceTimersByTime(SEEK_MAX_MS + SEEK_SETTLE_MS);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEEK_MAX_MS + SEEK_SETTLE_MS);
     });
 
     expect(onSeekingChange).toHaveBeenLastCalledWith(false);
@@ -3199,10 +3365,11 @@ describe("VideoPlayer", () => {
 
     fastSeek.mockClear();
     ref.current?.endScrubAndLock(5000);
-    expect(fastSeek).toHaveBeenCalledWith(5);
+    expect(fastSeek).not.toHaveBeenCalled();
+    expect(currentTimeSec).toBe(5);
     expect(onSeekingChange).toHaveBeenLastCalledWith(true);
 
-    // Stale off-target seeked must not complete; wait for settle before re-seek.
+    // Stale off-target seeked must not complete; wait for HDD grace before re-seek.
     currentTimeSec = 0;
     act(() => {
       video.dispatchEvent(new Event("seeked"));
@@ -3213,6 +3380,11 @@ describe("VideoPlayer", () => {
 
     act(() => {
       vi.advanceTimersByTime(SEEK_SETTLE_MS);
+    });
+    expect(currentTimeSec).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(HDD_SEEK_GRACE_MS);
     });
     expect(currentTimeSec).toBe(5);
 

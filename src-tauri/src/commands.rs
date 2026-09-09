@@ -496,6 +496,23 @@ pub fn get_log_dir(state: State<'_, Arc<AppState>>) -> String {
 }
 
 #[tauri::command]
+pub fn log_frontend(
+    level: String,
+    event: String,
+    fields: Option<serde_json::Value>,
+) {
+    let payload = fields
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "{}".to_string());
+    let line = format!("[frontend] {event} {payload}");
+    match level.as_str() {
+        "error" => tracing::error!("{line}"),
+        "warn" => tracing::warn!("{line}"),
+        _ => tracing::info!("{line}"),
+    }
+}
+
+#[tauri::command]
 pub async fn get_playback_info(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,

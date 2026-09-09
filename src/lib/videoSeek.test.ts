@@ -3,6 +3,8 @@ import {
   applyScrubSeek,
   clampToSeekableSec,
   isSeekAtTargetSec,
+  resolveLockedSeekTargetSec,
+  seekableCoversSec,
 } from "./videoSeek";
 
 function mockSeekable(ranges: Array<[number, number]>) {
@@ -32,6 +34,33 @@ describe("clampToSeekableSec", () => {
   it("returns target when seekable is empty", () => {
     const seekable = mockSeekable([]);
     expect(clampToSeekableSec(seekable, 12)).toBe(12);
+  });
+});
+
+describe("resolveLockedSeekTargetSec", () => {
+  it("keeps mid-file target when only a tiny early range exists", () => {
+    const seekable = mockSeekable([[0, 0.05]]);
+    expect(resolveLockedSeekTargetSec(seekable, 8)).toBe(8);
+  });
+
+  it("returns target when covered", () => {
+    const seekable = mockSeekable([[0, 100]]);
+    expect(resolveLockedSeekTargetSec(seekable, 8)).toBe(8);
+  });
+
+  it("returns target when seekable is empty", () => {
+    expect(resolveLockedSeekTargetSec(mockSeekable([]), 12)).toBe(12);
+  });
+});
+
+describe("seekableCoversSec", () => {
+  it("is false for empty or incomplete ranges", () => {
+    expect(seekableCoversSec(mockSeekable([]), 8)).toBe(false);
+    expect(seekableCoversSec(mockSeekable([[0, 0.05]]), 8)).toBe(false);
+  });
+
+  it("is true when covered", () => {
+    expect(seekableCoversSec(mockSeekable([[0, 100]]), 8)).toBe(true);
   });
 });
 

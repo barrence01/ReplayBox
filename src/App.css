@@ -708,7 +708,7 @@ select {
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
   font-size: 0.9rem;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .editor__transport {

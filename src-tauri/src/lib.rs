@@ -229,6 +229,7 @@ pub fn run() {
             commands::hardware_encoding_status,
             commands::resolved_tool_paths,
             commands::get_log_dir,
+            commands::log_frontend,
             commands::get_playback_info,
             commands::get_job_status,
             commands::list_jobs,

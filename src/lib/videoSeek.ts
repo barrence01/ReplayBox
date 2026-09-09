@@ -21,7 +21,43 @@ export function clampToSeekableSec(
   return seekable.end(seekable.length - 1);
 }
 
-/** Assign currentTime; used for locked-seek retries after the initial fastSeek. */
+/**
+ * Locked-seek target resolution. Unlike {@link clampToSeekableSec}, never pulls
+ * a mid-file target down to a tiny early buffer range (e.g. [0, 0.05]).
+ * Returns the intended time until seekable actually covers it.
+ */
+export function resolveLockedSeekTargetSec(
+  seekable: Pick<TimeRanges, "length" | "start" | "end">,
+  targetSec: number,
+): number {
+  if (seekable.length === 0) {
+    return targetSec;
+  }
+  for (let i = 0; i < seekable.length; i++) {
+    if (targetSec >= seekable.start(i) && targetSec <= seekable.end(i)) {
+      return targetSec;
+    }
+  }
+  return targetSec;
+}
+
+/** True when seekable ranges already include the target (safe to assign currentTime). */
+export function seekableCoversSec(
+  seekable: Pick<TimeRanges, "length" | "start" | "end">,
+  targetSec: number,
+): boolean {
+  if (seekable.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < seekable.length; i++) {
+    if (targetSec >= seekable.start(i) && targetSec <= seekable.end(i)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Assign currentTime; used for locked seeks (precise positioning). */
 export function applyVideoSeek(video: HTMLVideoElement, targetSec: number): void {
   video.currentTime = targetSec;
 }
@@ -36,17 +72,21 @@ export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void
 }
 
 /**
- * Settle / retry interval for locked seeks. Sized so HDD / WebKitGTK
- * range seeks are not aborted by rapid re-issues of currentTime.
+ * Poll interval while a locked seek is in flight. Short enough to notice
+ * settle, long enough not to spam currentTime on HDD range seeks.
  */
 export const SEEK_SETTLE_MS = 750;
-/** Caps retry loops when seeked fires repeatedly off-target. */
-export const LOCKED_SEEK_MAX_ATTEMPTS = 10;
-/** Absolute wall-clock timeout for a locked seek (HDD-friendly). */
-export const SEEK_MAX_MS = 10_000;
 /**
- * Tolerance for locked seeks. Matches v0.1.1; fastSeek often lands on nearby
- * keyframes (~0.2s).
+ * Minimum wall-clock wait before re-issuing currentTime while seeking/off-target.
+ * Sized for HDD spin-up / WebKitGTK range seeks (~2–3s).
+ */
+export const HDD_SEEK_GRACE_MS = 4_000;
+/** Caps how many currentTime assignments a locked seek may make. */
+export const LOCKED_SEEK_MAX_ATTEMPTS = 10;
+/** Absolute wall-clock timeout for a locked seek (HDD-friendly). Snap, do not remux. */
+export const SEEK_MAX_MS = 25_000;
+/**
+ * Tolerance for locked seeks. currentTime often lands on nearby keyframes (~0.2s).
  */
 export const LOCKED_SEEK_TOLERANCE_SEC = 0.2;
 /** Coarse tolerance used to skip a redundant seekAndLock call. */
