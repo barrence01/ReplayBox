@@ -61,6 +61,8 @@ const PREPARING_ELAPSED_TICK_MS = 1000;
 const SCRUB_SEEK_FALLBACK_MS = 100;
 /** Non-zero seek used to warm WebKit demuxer before the first user seek. */
 const SEEK_PRIME_OFFSET_SEC = 1;
+/** Identical currentTime writes are no-ops; nudge so WebKit paints the landed frame. */
+const SEEK_PAINT_NUDGE_SEC = 0.001;
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
   function VideoPlayer(
@@ -125,6 +127,11 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     );
     const loadTimeoutRef = useRef<number | null>(null);
     const seekTimeoutRef = useRef<number | null>(null);
+    const pauseSeekCleanupRef = useRef<(() => void) | null>(null);
+    const atTargetSeekingPollsRef = useRef(0);
+    const seekLogKeyRef = useRef<string | null>(null);
+    const seekWaitPollsRef = useRef(0);
+    const blockedPlayLoggedRef = useRef(false);
     const preparingPollRef = useRef<number | null>(null);
     const preparingElapsedRef = useRef<number | null>(null);
     const preparingMetaRef = useRef<{
@@ -150,6 +157,13 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     const [canProcessNext, setCanProcessNext] = useState(false);
     const [seekingUi, setSeekingUi] = useState(false);
     const [hasPaintedFrame, setHasPaintedFrame] = useState(false);
+
+    function resetSeekBookkeeping() {
+      atTargetSeekingPollsRef.current = 0;
+      seekLogKeyRef.current = null;
+      seekWaitPollsRef.current = 0;
+      blockedPlayLoggedRef.current = false;
+    }
 
     function seekLogFields(extra: Record<string, unknown> = {}) {
       const video = videoRef.current;
@@ -177,6 +191,46 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       };
     }
 
+    function seekOutcomeFields(extra: Record<string, unknown> = {}) {
+      const startedAt = seekStartedAtRef.current;
+      return {
+        waitPolls: seekWaitPollsRef.current,
+        elapsedMs:
+          startedAt != null ? Math.round(Date.now() - startedAt) : null,
+        seekingStillTrue: videoRef.current?.seeking ?? false,
+        ...extra,
+      };
+    }
+
+    /** Drop consecutive repeats of the same seek event. Wait polls are counted. */
+    function logSeekRepeat(
+      level: "info" | "warn" | "error",
+      event: string,
+      fields: Record<string, unknown>,
+    ) {
+      const key = `${event}|${String(fields.reason ?? "")}|${String(fields.detail ?? "")}`;
+      const isWait = event === "seek.settle";
+      if (seekLogKeyRef.current === key) {
+        if (isWait) {
+          seekWaitPollsRef.current += 1;
+        }
+        return;
+      }
+      seekLogKeyRef.current = key;
+      if (isWait) {
+        seekWaitPollsRef.current += 1;
+      }
+      logPlayback(level, event, seekLogFields(fields));
+    }
+
+    function logBlockedPlay() {
+      if (blockedPlayLoggedRef.current) {
+        return;
+      }
+      blockedPlayLoggedRef.current = true;
+      logPlayback("info", "seek.blocked_play", seekLogFields());
+    }
+
     function clearLoadTimeout() {
       if (loadTimeoutRef.current !== null) {
         window.clearTimeout(loadTimeoutRef.current);
@@ -189,6 +243,11 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         window.clearTimeout(seekTimeoutRef.current);
         seekTimeoutRef.current = null;
       }
+    }
+
+    function clearDeferredPauseSeek() {
+      pauseSeekCleanupRef.current?.();
+      pauseSeekCleanupRef.current = null;
     }
 
     function clearPreparingPoll() {
@@ -430,12 +489,14 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
     function finishSeek() {
       clearSeekTimeout();
+      clearDeferredPauseSeek();
       isSeekingRef.current = false;
       pendingSeekMsRef.current = null;
       seekTargetMsRef.current = null;
       seekAttemptRef.current = 0;
       seekStartedAtRef.current = null;
       lastSeekApplyAtRef.current = null;
+      resetSeekBookkeeping();
       releaseLockedSeek();
       resolveSeekDoneWaiters();
 
@@ -482,6 +543,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
       if (primingPhaseRef.current === "offset") {
         clearSeekTimeout();
+        clearDeferredPauseSeek();
         isSeekingRef.current = false;
         pendingSeekMsRef.current = null;
         seekTargetMsRef.current = null;
@@ -516,10 +578,17 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       }
 
       const wasLocked = lockedSeekRef.current;
-      logPlayback("info", "seek.settle", seekLogFields({ reason: "complete" }));
+      const outcome = seekOutcomeFields();
+      const seekingStillTrue = video.seeking;
+      const landedMs = video.currentTime * 1000;
       finishSeek();
-      const ms = video.currentTime * 1000;
-      if (ms < startMs) {
+      if (landedMs < startMs) {
+        logPlayback("info", "seek.settle", seekLogFields({
+          reason: "complete",
+          ...outcome,
+          seekingStillTrue,
+          nudged: false,
+        }));
         if (wasLocked) {
           lockedSeekRef.current = true;
           setSeekingLocked(true);
@@ -527,8 +596,19 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         seekTo(startMs);
         return;
       }
+      let nudged = false;
+      if (seekingStillTrue) {
+        video.currentTime = video.currentTime + SEEK_PAINT_NUDGE_SEC;
+        nudged = true;
+      }
+      logPlayback("info", "seek.settle", seekLogFields({
+        reason: "complete",
+        ...outcome,
+        seekingStillTrue,
+        nudged,
+      }));
       seekPrimedRef.current = true;
-      onTimeUpdate(clampToSelection(ms));
+      onTimeUpdate(clampToSelection(video.currentTime * 1000));
 
       if (resumePlayback) {
         resumeAfterSeekRef.current = false;
@@ -537,12 +617,11 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     }
 
     /**
-     * Unlock UI. Prefer the intended seek target for the transport clock when
-     * the element never landed nearby — avoids jumping the playhead on snap.
+     * Unlock UI and report the element's current time. Publishing the intended
+     * target here left the transport clock frozen while playback continued.
      */
     function snapSeekToActual() {
       const video = videoRef.current;
-      const intendedMs = seekTargetMsRef.current;
       const postPrimeMs = postPrimeSeekMsRef.current;
       resumeAfterSeekRef.current = false;
       if (primingPhaseRef.current !== null) {
@@ -550,22 +629,18 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         seekPrimedRef.current = true;
         postPrimeSeekMsRef.current = null;
       }
-      logPlayback("warn", "seek.settle", seekLogFields({ reason: "snap" }));
+      const outcome = seekOutcomeFields();
+      logPlayback("warn", "seek.settle", seekLogFields({
+        reason: "snap",
+        ...outcome,
+      }));
       finishSeek();
       if (postPrimeMs !== null) {
         seekTo(postPrimeMs);
         return;
       }
       if (video) {
-        const actualMs = video.currentTime * 1000;
-        if (
-          intendedMs !== null &&
-          !isSeekAtTargetSec(video.currentTime, intendedMs / 1000)
-        ) {
-          onTimeUpdate(clampToSelection(intendedMs));
-          return;
-        }
-        onTimeUpdate(clampToSelection(actualMs));
+        onTimeUpdate(clampToSelection(video.currentTime * 1000));
       }
     }
 
@@ -588,14 +663,20 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
       if (atTarget) {
         // WebKitGTK often leaves seeking=true after currentTime already landed.
-        // Priming must complete immediately; normal seeks wait briefly then accept.
-        const stuckSeekingBudgetMs =
-          primingPhaseRef.current !== null ? 0 : HDD_SEEK_GRACE_MS;
-        if (video.seeking && elapsed < stuckSeekingBudgetMs) {
-          logPlayback("info", "seek.settle", seekLogFields({
-            reason: "wait",
-            detail: "at_target_still_seeking",
-          }));
+        // Priming accepts immediately. A user seek waits one poll, then accepts
+        // anyway — the 10s HDD grace must not freeze the transport on a landed seek.
+        if (
+          video.seeking &&
+          primingPhaseRef.current === null &&
+          atTargetSeekingPollsRef.current < 1
+        ) {
+          if (fromTimeout) {
+            atTargetSeekingPollsRef.current += 1;
+          }
+          logSeekRepeat("info", "seek.settle", {
+            reason: "at_target",
+            detail: "seeking_flag_stuck",
+          });
           armSeekTimeout();
           return;
         }
@@ -611,6 +692,27 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
+      // pause()+currentTime in the same turn is often ignored while playing.
+      // That is not an in-flight Range seek — do not burn HDD grace on it.
+      if (!video.paused && !video.seeking) {
+        if (elapsed >= SEEK_HARD_MAX_MS) {
+          snapSeekToActual();
+          return;
+        }
+        logSeekRepeat("info", "seek.settle", {
+          reason: "ignored_while_playing",
+        });
+        const targetMs = seekTargetMsRef.current;
+        video.pause();
+        if (targetMs !== null) {
+          scheduleSeekAfterPause(video, targetMs, resumeAfterSeekRef.current);
+        }
+        if (!video.paused) {
+          armSeekTimeout();
+        }
+        return;
+      }
+
       const lastApply = lastSeekApplyAtRef.current ?? startedAt;
       const sinceApply = Date.now() - lastApply;
       const inHddGrace =
@@ -622,11 +724,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           snapSeekToActual();
           return;
         }
-        logPlayback("info", "seek.settle", seekLogFields({
-          reason: "wait",
-          detail: video.seeking ? "engine_seeking" : "hdd_grace",
+        logSeekRepeat("info", "seek.settle", {
+          reason: video.seeking ? "engine_seeking" : "hdd_grace",
           sinceApplyMs: Math.round(sinceApply),
-        }));
+        });
         armSeekTimeout();
         return;
       }
@@ -642,10 +743,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           snapSeekToActual();
           return;
         }
-        logPlayback("info", "seek.settle", seekLogFields({
-          reason: "wait",
-          detail: "awaiting_seekable",
-        }));
+        logSeekRepeat("info", "seek.settle", {
+          reason: "awaiting_seekable",
+        });
         armSeekTimeout();
         return;
       }
@@ -691,10 +791,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       }
 
       if (!canApplyLockedSeek(video, targetSec)) {
-        logPlayback("info", "seek.pending", seekLogFields({
+        logSeekRepeat("info", "seek.pending", {
           reason: "awaiting_seekable",
           targetSec,
-        }));
+        });
         armSeekTimeout();
         return;
       }
@@ -709,11 +809,66 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       applyVideoSeek(video, targetSec);
     }
 
+    /**
+     * Assign currentTime only after pause has settled. WebKitGTK ignores a
+     * currentTime write in the same turn as pause() and keeps playing.
+     */
+    function scheduleSeekAfterPause(
+      video: HTMLVideoElement,
+      targetMs: number,
+      resumePlayback: boolean,
+    ) {
+      clearDeferredPauseSeek();
+      let settled = false;
+      let timeoutId: number | null = null;
+
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        video.removeEventListener("pause", onPause);
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        if (pauseSeekCleanupRef.current === cleanup) {
+          pauseSeekCleanupRef.current = null;
+        }
+        if (!isSeekingRef.current || videoRef.current !== video || !video.paused) {
+          return;
+        }
+        applyLockedVideoSeek(video, targetMs, resumePlayback);
+      };
+
+      const onPause = () => {
+        finish();
+      };
+
+      const cleanup = () => {
+        settled = true;
+        video.removeEventListener("pause", onPause);
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+      pauseSeekCleanupRef.current = cleanup;
+
+      if (video.paused) {
+        timeoutId = window.setTimeout(finish, 0);
+        return;
+      }
+      video.addEventListener("pause", onPause);
+    }
+
     function beginVideoSeek(video: HTMLVideoElement, targetMs: number) {
       const wasPlaying = !video.paused;
       resumeAfterSeekRef.current = wasPlaying;
       if (wasPlaying) {
         video.pause();
+        scheduleSeekAfterPause(video, targetMs, wasPlaying);
+        return;
       }
       applyLockedVideoSeek(video, targetMs, wasPlaying);
     }
@@ -750,6 +905,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
+      clearDeferredPauseSeek();
       lockedSeekRef.current = true;
       // Silent demuxer priming must not flash the Seeking overlay on every open.
       if (options?.primeStep) {
@@ -762,6 +918,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       seekAttemptRef.current = 0;
       seekStartedAtRef.current = Date.now();
       lastSeekApplyAtRef.current = null;
+      resetSeekBookkeeping();
       isSeekingRef.current = true;
       // Always arm watchdog, including readyState < 1 / preparing.
       armSeekTimeout();
@@ -780,16 +937,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           return;
         }
 
-        logPlayback("info", "seek.pending", seekLogFields({
+        logSeekRepeat("info", "seek.pending", {
           reason:
             video.readyState < 1 ? "awaiting_media" : "awaiting_seekable",
           readyState: video.readyState,
-        }));
+        });
       } else {
-        logPlayback("info", "seek.pending", seekLogFields({
+        logSeekRepeat("info", "seek.pending", {
           reason: "awaiting_media",
           readyState: null,
-        }));
+        });
       }
 
       if (resumePlayback !== undefined) {
@@ -811,11 +968,13 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
+      clearDeferredPauseSeek();
       pendingSeekMsRef.current = clamped;
       seekTargetMsRef.current = clamped;
       seekAttemptRef.current = 0;
       seekStartedAtRef.current = Date.now();
       lastSeekApplyAtRef.current = null;
+      resetSeekBookkeeping();
       isSeekingRef.current = true;
       armSeekTimeout();
 
@@ -826,15 +985,15 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
           beginVideoSeek(video, clamped);
           return;
         }
-        logPlayback("info", "seek.pending", seekLogFields({
+        logSeekRepeat("info", "seek.pending", {
           reason:
             video.readyState < 1 ? "awaiting_media" : "awaiting_seekable",
-        }));
+        });
         return;
       }
-      logPlayback("info", "seek.pending", seekLogFields({
+      logSeekRepeat("info", "seek.pending", {
         reason: "awaiting_media",
-      }));
+      });
     }
 
     function seekAndLock(ms: number) {
@@ -1121,6 +1280,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       seekAttemptRef.current = 0;
       seekStartedAtRef.current = null;
       lastSeekApplyAtRef.current = null;
+      resetSeekBookkeeping();
       queuedLockedSeekMsRef.current = null;
       queuedLockedSeekResumeRef.current = undefined;
       resumeAfterSeekRef.current = false;
@@ -1154,6 +1314,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         fallbackInProgressRef.current = false;
         clearPlaybackTimers();
         clearScrubSeekTimeout();
+        clearDeferredPauseSeek();
       };
     }, [recordingId, onError]);
 
@@ -1162,7 +1323,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         const video = videoRef.current;
         if (!video || interactionLockedRef.current || isSeekingRef.current) {
           if (interactionLockedRef.current || isSeekingRef.current) {
-            logPlayback("info", "seek.blocked_play", seekLogFields());
+            logBlockedPlay();
           }
           return;
         }
@@ -1203,7 +1364,23 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
 
     function handleTimeUpdate() {
       const video = videoRef.current;
-      if (!video || isSeekingRef.current || isScrubbingRef.current) return;
+      if (!video || isScrubbingRef.current) return;
+      if (isSeekingRef.current) {
+        // A real seek (paused or video.seeking) must not let a stale timeupdate
+        // pull the playhead back. If the engine ignored the seek and kept
+        // playing, follow the element so the transport clock cannot freeze.
+        if (
+          !video.paused &&
+          !video.seeking &&
+          seekTargetMsRef.current !== null
+        ) {
+          const targetSec = resolveSeekTargetSec(video, seekTargetMsRef.current);
+          if (!isSeekAtTargetSec(video.currentTime, targetSec)) {
+            onTimeUpdate(clampToSelection(video.currentTime * 1000));
+          }
+        }
+        return;
+      }
 
       const ms = video.currentTime * 1000;
       if (!video.paused && ms >= endMs) {
@@ -1316,7 +1493,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
             const video = videoRef.current;
             if (!video || interactionLockedRef.current || isSeekingRef.current) {
               if (interactionLockedRef.current || isSeekingRef.current) {
-                logPlayback("info", "seek.blocked_play", seekLogFields());
+                logBlockedPlay();
               }
               return;
             }
@@ -1369,6 +1546,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
               seekAttemptRef.current = 0;
               seekStartedAtRef.current = Date.now();
               lastSeekApplyAtRef.current = null;
+              resetSeekBookkeeping();
               isSeekingRef.current = true;
               armSeekTimeout();
               if (video) {
@@ -1376,9 +1554,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
                 if (canApplyLockedSeek(video, targetSec)) {
                   applyLockedVideoSeek(video, clamped, resume);
                 } else {
-                  logPlayback("info", "seek.pending", seekLogFields({
+                  logSeekRepeat("info", "seek.pending", {
                     reason: "awaiting_seekable",
-                  }));
+                  });
                 }
               }
               return;
