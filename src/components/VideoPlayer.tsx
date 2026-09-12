@@ -13,12 +13,12 @@ import { isPlayInterruptedError } from "../lib/videoPlayback";
 import {
   HDD_SEEK_GRACE_MS,
   LOCKED_SEEK_MAX_ATTEMPTS,
+  SEEK_HARD_MAX_MS,
   SEEK_MAX_MS,
   SEEK_SETTLE_MS,
   applyScrubSeek,
   applyVideoSeek,
   canApplyLockedSeek,
-  clampToSeekableSec,
   isSeekAtTargetSec,
   resolveLockedSeekTargetSec,
   seekableCoversSec,
@@ -59,7 +59,6 @@ const PREPARING_TIMEOUT_MS = 120_000;
 const PREPARING_POLL_MS = 500;
 const PREPARING_ELAPSED_TICK_MS = 1000;
 const SCRUB_SEEK_FALLBACK_MS = 100;
-const SEEKED_WAIT_TIMEOUT_MS = 3_000;
 /** Non-zero seek used to warm WebKit demuxer before the first user seek. */
 const SEEK_PRIME_OFFSET_SEC = 1;
 
@@ -119,6 +118,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
     const queuedLockedSeekMsRef = useRef<number | null>(null);
     const queuedLockedSeekResumeRef = useRef<boolean | undefined>(undefined);
     const resumeAfterSeekRef = useRef(false);
+    const seekDoneResolveRef = useRef<(() => void) | null>(null);
     const pendingSeekAfterFallbackRef = useRef<number | null>(null);
     const requestFallbackRef = useRef<(level: 1 | 2) => Promise<void>>(
       async () => undefined,
@@ -322,15 +322,39 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       return Math.min(Math.max(ms, startMs), endMs);
     }
 
-    function resolveScrubSeekTargetSec(video: HTMLVideoElement, ms: number): number {
-      return clampToSeekableSec(video.seekable, clampToSelection(ms) / 1000);
-    }
-
     function resolveSeekTargetSec(video: HTMLVideoElement, ms: number): number {
       return resolveLockedSeekTargetSec(
         video.seekable,
         clampToSelection(ms) / 1000,
       );
+    }
+
+    function resolveScrubSeekTargetSec(video: HTMLVideoElement, ms: number): number {
+      return resolveLockedSeekTargetSec(
+        video.seekable,
+        clampToSelection(ms) / 1000,
+      );
+    }
+
+    function resolveSeekDoneWaiters() {
+      const resolve = seekDoneResolveRef.current;
+      if (resolve) {
+        seekDoneResolveRef.current = null;
+        resolve();
+      }
+    }
+
+    function waitForSeekDone(): Promise<void> {
+      if (!isSeekingRef.current) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const prev = seekDoneResolveRef.current;
+        seekDoneResolveRef.current = () => {
+          prev?.();
+          resolve();
+        };
+      });
     }
 
     function setSeekingLocked(locked: boolean) {
@@ -379,6 +403,11 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       }
 
       const targetSec = resolveScrubSeekTargetSec(video, targetMs);
+      if (!canApplyLockedSeek(video, targetSec)) {
+        scrubSeekIdleRef.current = true;
+        armScrubSeekFallback();
+        return;
+      }
       applyScrubSeek(video, targetSec);
       scrubAppliedMsRef.current = targetMs;
       scrubSeekIdleRef.current = false;
@@ -408,6 +437,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       seekStartedAtRef.current = null;
       lastSeekApplyAtRef.current = null;
       releaseLockedSeek();
+      resolveSeekDoneWaiters();
 
       const queuedMs = queuedLockedSeekMsRef.current;
       const queuedResume = queuedLockedSeekResumeRef.current;
@@ -506,9 +536,13 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       }
     }
 
-    /** Unlock UI and sync the transport clock to the element. Never remux. */
+    /**
+     * Unlock UI. Prefer the intended seek target for the transport clock when
+     * the element never landed nearby — avoids jumping the playhead on snap.
+     */
     function snapSeekToActual() {
       const video = videoRef.current;
+      const intendedMs = seekTargetMsRef.current;
       const postPrimeMs = postPrimeSeekMsRef.current;
       resumeAfterSeekRef.current = false;
       if (primingPhaseRef.current !== null) {
@@ -523,7 +557,15 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
       if (video) {
-        onTimeUpdate(clampToSelection(video.currentTime * 1000));
+        const actualMs = video.currentTime * 1000;
+        if (
+          intendedMs !== null &&
+          !isSeekAtTargetSec(video.currentTime, intendedMs / 1000)
+        ) {
+          onTimeUpdate(clampToSelection(intendedMs));
+          return;
+        }
+        onTimeUpdate(clampToSelection(actualMs));
       }
     }
 
@@ -569,21 +611,17 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
-      if (elapsed >= SEEK_MAX_MS) {
-        snapSeekToActual();
-        return;
-      }
-
       const lastApply = lastSeekApplyAtRef.current ?? startedAt;
       const sinceApply = Date.now() - lastApply;
+      const inHddGrace =
+        lastSeekApplyAtRef.current !== null && sinceApply < HDD_SEEK_GRACE_MS;
 
-      // Do not re-issue currentTime while the engine is still seeking,
-      // and respect HDD grace after an apply so range seeks are not aborted.
-      // Skip grace when currentTime was never assigned (still awaiting seekable).
-      if (
-        video.seeking ||
-        (lastSeekApplyAtRef.current !== null && sinceApply < HDD_SEEK_GRACE_MS)
-      ) {
+      // Never abort an in-flight Range seek; keep polling until hard max.
+      if (video.seeking || inHddGrace) {
+        if (elapsed >= SEEK_HARD_MAX_MS) {
+          snapSeekToActual();
+          return;
+        }
         logPlayback("info", "seek.settle", seekLogFields({
           reason: "wait",
           detail: video.seeking ? "engine_seeking" : "hdd_grace",
@@ -593,7 +631,17 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         return;
       }
 
+      // Soft max: snap only once the engine has stopped and grace has passed.
+      if (elapsed >= SEEK_MAX_MS) {
+        snapSeekToActual();
+        return;
+      }
+
       if (!canApplyLockedSeek(video, targetSec)) {
+        if (elapsed >= SEEK_HARD_MAX_MS) {
+          snapSeekToActual();
+          return;
+        }
         logPlayback("info", "seek.settle", seekLogFields({
           reason: "wait",
           detail: "awaiting_seekable",
@@ -1123,22 +1171,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         endedNaturally.current = false;
         const ms = video.currentTime * 1000;
         if (ms < startMs || ms >= endMs) {
-          seekTo(startMs);
-          if (isSeekingRef.current) {
-            await new Promise<void>((resolve) => {
-              let settled = false;
-              const finish = () => {
-                if (settled) return;
-                settled = true;
-                video.removeEventListener("seeked", onSeeked);
-                window.clearTimeout(timeoutId);
-                resolve();
-              };
-              const onSeeked = () => finish();
-              const timeoutId = window.setTimeout(finish, SEEKED_WAIT_TIMEOUT_MS);
-              video.addEventListener("seeked", onSeeked);
-            });
-          }
+          // Locked seek with resume; completeSeek plays when settled.
+          startLockedSeek(startMs, true);
+          await waitForSeekDone();
+          return;
         }
 
         try {

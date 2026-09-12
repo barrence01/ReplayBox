@@ -102,13 +102,21 @@ export function applyScrubSeek(video: HTMLVideoElement, targetSec: number): void
 export const SEEK_SETTLE_MS = 750;
 /**
  * Minimum wall-clock wait before re-issuing currentTime while seeking/off-target.
- * Sized for HDD spin-up / WebKitGTK range seeks (~2–3s).
+ * Floor so we do not abort an in-flight WebKitGTK Range fetch on cold HDD
+ * (spin-up + mechanical seek + progressive HTTP can take many seconds).
  */
-export const HDD_SEEK_GRACE_MS = 4_000;
+export const HDD_SEEK_GRACE_MS = 10_000;
 /** Caps how many currentTime assignments a locked seek may make. */
-export const LOCKED_SEEK_MAX_ATTEMPTS = 10;
-/** Absolute wall-clock timeout for a locked seek (HDD-friendly). Snap, do not remux. */
-export const SEEK_MAX_MS = 25_000;
+export const LOCKED_SEEK_MAX_ATTEMPTS = 3;
+/**
+ * Soft wall-clock timeout for a locked seek when the engine has stopped seeking
+ * but is still off-target. Does not snap while video.seeking is true.
+ */
+export const SEEK_MAX_MS = 45_000;
+/**
+ * Hard safety cap so a stuck seeking=true cannot lock the UI forever.
+ */
+export const SEEK_HARD_MAX_MS = 90_000;
 /**
  * Tolerance for locked seeks. currentTime often lands on nearby keyframes (~0.2s).
  */
