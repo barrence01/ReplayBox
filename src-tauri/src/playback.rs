@@ -51,7 +51,6 @@ pub fn audio_copy_compatible(audio_codec: Option<&str>) -> bool {
     is_browser_native_audio(audio_codec)
 }
 
-#[allow(dead_code)]
 pub fn needs_container_fixup(path: &Path, ext: Option<&str>) -> bool {
     if ext != Some("mp4") {
         return true;
@@ -59,7 +58,6 @@ pub fn needs_container_fixup(path: &Path, ext: Option<&str>) -> bool {
     mp4_needs_stream_remux(path)
 }
 
-#[allow(dead_code)]
 pub fn mp4_needs_stream_remux(path: &Path) -> bool {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -134,7 +132,7 @@ pub fn select_initial_strategy(recording: &Recording) -> PlaybackStrategy {
         _ => return PlaybackStrategy::Transcode,
     }
 
-    if ext_ref != Some("mp4") {
+    if needs_container_fixup(path, ext_ref) {
         return PlaybackStrategy::StreamCopy;
     }
 
@@ -279,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn moov_at_end_h264_aac_is_direct() {
+    fn moov_at_end_h264_aac_is_stream_copy() {
         let tmp = write_mp4_atoms(&[
             (b"ftyp", b"isom"),
             (b"mdat", &[0; 16]),
@@ -287,7 +285,10 @@ mod tests {
         let mut rec = recording(("h264", "aac"), tmp.path().to_str().unwrap());
         rec.size_bytes = Some(1_000_000);
         rec.duration_ms = Some(60_000.0);
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
+        assert_eq!(
+            playback_strategy(&rec, false, 1),
+            PlaybackStrategy::StreamCopy
+        );
     }
 
     #[test]
@@ -315,18 +316,26 @@ mod tests {
     }
 
     #[test]
-    fn h264_opus_moov_at_end_is_direct() {
+    fn h264_opus_moov_at_end_is_stream_copy() {
         let tmp = write_mp4_atoms(&[
             (b"ftyp", b"isom"),
             (b"mdat", &[0; 16]),
         ]);
         let rec = recording(("h264", "opus"), tmp.path().to_str().unwrap());
-        assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
+        assert_eq!(
+            playback_strategy(&rec, false, 1),
+            PlaybackStrategy::StreamCopy
+        );
     }
 
     #[test]
-    fn h264_exotic_audio_mp4_is_direct() {
-        let rec = recording(("h264", "pcm_s16le"), "/v/a.mp4");
+    fn h264_exotic_audio_faststart_mp4_is_direct() {
+        let tmp = write_mp4_atoms(&[
+            (b"ftyp", b"isom"),
+            (b"moov", &[0; 8]),
+            (b"mdat", &[0; 8]),
+        ]);
+        let rec = recording(("h264", "pcm_s16le"), tmp.path().to_str().unwrap());
         assert_eq!(playback_strategy(&rec, false, 1), PlaybackStrategy::Direct);
     }
 

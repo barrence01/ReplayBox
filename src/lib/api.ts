@@ -107,6 +107,22 @@ export function getLogDir() {
   return invoke<string>("get_log_dir");
 }
 
+export function logPlayback(
+  level: "info" | "warn" | "error",
+  event: string,
+  fields: Record<string, unknown>,
+): void {
+  const line = `[ReplayBox ${event}] ${JSON.stringify(fields)}`;
+  if (level === "error") {
+    console.error(line);
+  } else if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.info(line);
+  }
+  void invoke("log_frontend", { level, event, fields }).catch(() => undefined);
+}
+
 export function getPlaybackInfo(
   recordingId: string,
   options?: {
